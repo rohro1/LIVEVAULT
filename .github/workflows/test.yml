@@ -1,0 +1,25 @@
+name: tiktok-reachability
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: "TikTok username, no @"
+        required: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      U: ${{ inputs.username }}
+    steps:
+      - name: Runner IP
+        run: curl -s https://api.ipify.org; echo
+      - name: Check TikTok
+        run: |
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
+          for url in "https://www.tiktok.com/@$U" "https://www.tiktok.com/@$U/live"; do
+            code=$(curl -s -L -o page.html -w "%{http_code}" -A "$UA" "$url")
+            echo "$url -> HTTP $code, $(wc -c < page.html) bytes"
+            grep -qi -E "captcha|verify|access denied" page.html && echo "WARNING: block/captcha page"
+          done
+      - name: FFmpeg
+        run: ffmpeg -version | head -1
