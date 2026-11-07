@@ -1,25 +1,30 @@
 name: tiktok-reachability
 on:
+  push:
   workflow_dispatch:
     inputs:
       username:
         description: "TikTok username, no @"
-        required: true
+        required: false
 jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      U: ${{ inputs.username }}
+      U: ${{ inputs.username || 'johora' }}
     steps:
-      - name: Runner IP
-        run: curl -s https://api.ipify.org; echo
       - name: Check TikTok
         run: |
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
+          echo "runner ip: $(curl -s https://api.ipify.org)"
           for url in "https://www.tiktok.com/@$U" "https://www.tiktok.com/@$U/live"; do
             code=$(curl -s -L -o page.html -w "%{http_code}" -A "$UA" "$url")
-            echo "$url -> HTTP $code, $(wc -c < page.html) bytes"
-            grep -qi -E "captcha|verify|access denied" page.html && echo "WARNING: block/captcha page"
+            echo "== $url -> HTTP $code, $(wc -c < page.html) bytes"
+            echo "rehydration data: $(grep -c 'UNIVERSAL_DATA_FOR_REHYDRATION' page.html || true)"
+            echo "captcha markers: $(grep -ci -E 'captcha-verify|verifycenter|slide to verify|Access Denied' page.html || true)"
+            echo "title: $(grep -o '<title>[^<]*' page.html | head -1)"
           done
+          echo "== room API"
+          curl -s -A "$UA" -w "\nHTTP %{http_code}\n" "https://www.tiktok.com/api-live/user/room/?aid=1988&uniqueId=$U&sourceType=54" | head -c 600
+          echo
       - name: FFmpeg
         run: ffmpeg -version | head -1
