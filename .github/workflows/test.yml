@@ -2,18 +2,13 @@ name: tiktok-reachability
 on:
   push:
   workflow_dispatch:
-    inputs:
-      username:
-        description: "TikTok username, no @"
-        required: false
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      U: ${{ inputs.username || 'johora' }}
     steps:
       - name: Check TikTok
         run: |
+          U=johora
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
           echo "runner ip: $(curl -s https://api.ipify.org)"
           for url in "https://www.tiktok.com/@$U" "https://www.tiktok.com/@$U/live"; do
