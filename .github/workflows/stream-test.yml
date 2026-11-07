@@ -1,0 +1,38 @@
+name: stream-test
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HOST: queen_bee_diaries
+      UA: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FFmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+      - name: Resolve stream
+        run: python3 engine/resolve.py "$HOST" /tmp/stream.url
+      - name: Capture 100s in 30s parts
+        run: |
+          URL=$(cat /tmp/stream.url); echo "::add-mask::$URL"
+          mkdir -p out
+          set +e
+          timeout 150 ffmpeg -hide_banner -loglevel warning -nostdin -user_agent "$UA" -rw_timeout 15000000 \
+            -i "$URL" -t 100 -c copy -f segment -segment_time 30 -segment_start_number 1 \
+            -segment_format mpegts -reset_timestamps 1 out/part_%03d.ts 2>&1 | sed 's/^/RESULT: ffmpeg: /' | tail -15
+          for f in out/part_*.ts; do
+            [ -f "$f" ] || continue
+            ffmpeg -nostdin -loglevel error -i "$f" -c copy -movflags +faststart "${f%.ts}.mp4" && rm "$f"
+          done
+      - name: Inspect parts
+        run: |
+          ls out | sed 's/^/RESULT: file: /'
+          for f in out/*.mp4; do
+            [ -f "$f" ] || continue
+            echo "RESULT: $(basename $f) $(ffprobe -v error -show_entries format=duration,size:stream=codec_name -of csv=p=0 "$f" | tr '\n' ' ')"
+          done
