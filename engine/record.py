@@ -89,7 +89,9 @@ def github_request(repo, token, method="GET", body=None):
 
 
 def refresh_tracked_user(host_key, repo, token, secret):
-    tracked = github_request(repo, token)
+    tracked = os.environ.get("TRACKED")
+    if tracked is None:
+        tracked = github_request(repo, token)
     username = tracked_user(host_key, tracked, secret)
     if username:
         print(f"::add-mask::{username}")

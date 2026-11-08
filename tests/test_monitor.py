@@ -16,7 +16,7 @@ from monitor import (
     parse_accounts,
     parse_live_status,
 )
-from record import tracked_user
+from record import refresh_tracked_user, tracked_user
 
 
 class MonitorTests(unittest.TestCase):
@@ -99,6 +99,14 @@ class MonitorTests(unittest.TestCase):
         key = account_key("alice", "secret")
         self.assertEqual(tracked_user(key, "bob, alice", "secret"), "alice")
         self.assertIsNone(tracked_user(key, "bob", "secret"))
+
+    def test_recorder_uses_injected_tracked_variable_without_api_access(self):
+        key = account_key("alice", "secret")
+        with patch.dict("os.environ", {"TRACKED": "alice,bob"}), patch(
+            "record.github_request",
+            side_effect=AssertionError("unexpected GitHub API call"),
+        ):
+            self.assertEqual(refresh_tracked_user(key, "repo", "token", "secret"), "alice")
 
     def test_quiet_hours_are_disabled_by_default(self):
         self.assertFalse(in_quiet_hours("false", "", ""))
