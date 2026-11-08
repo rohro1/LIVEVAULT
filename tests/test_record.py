@@ -8,10 +8,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 
 from record import (
     APIError,
+    account_key,
     api_request,
     capture_has_data,
     drive_upload,
     ffmpeg_error_summary,
+    refresh_tracked_user,
     resolve_stream,
     run_capture,
     save_failure_reason,
@@ -43,6 +45,48 @@ class RecorderTests(unittest.TestCase):
 
             segment.write_bytes(b"stream data")
             self.assertTrue(capture_has_data(directory))
+
+    def test_removed_account_is_detected_from_live_dashboard_state(self):
+        host_key = account_key("alice", "secret")
+        environment = {
+            "TRACKED": "alice",
+            "DASHBOARD_API_URL": "https://livevault.example",
+            "DASHBOARD_API_TOKEN": "dashboard-token",
+        }
+        with patch.dict("os.environ", environment), patch(
+            "record.api_request",
+            return_value=(200, {}, b'{"active":false}'),
+        ) as request:
+            username = refresh_tracked_user(
+                host_key,
+                "owner/repo",
+                "github-token",
+                "secret",
+            )
+
+        self.assertIsNone(username)
+        self.assertEqual(
+            request.call_args.args[0],
+            "https://livevault.example/api/internal/accounts/alice",
+        )
+
+    def test_tracked_account_check_fails_explicitly_when_dashboard_is_unavailable(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "TRACKED": "alice",
+                "DASHBOARD_API_URL": "https://livevault.example",
+                "DASHBOARD_API_TOKEN": "dashboard-token",
+            },
+        ), patch("record.api_request", side_effect=APIError(502)), self.assertRaisesRegex(
+            APIError, "HTTP 502"
+        ):
+            refresh_tracked_user(
+                account_key("alice", "secret"),
+                "owner/repo",
+                "github-token",
+                "secret",
+            )
 
     def test_uploaded_recording_reports_its_probed_duration(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -179,6 +223,46 @@ class RecorderTests(unittest.TestCase):
 
         self.assertEqual(upload_segments.call_count, 2)
         self.assertFalse(upload_segments.call_args_list[0].kwargs["finalized"])
+        self.assertTrue(upload_segments.call_args.kwargs["finalized"])
+        self.assertEqual(process.returncode, 0)
+
+    def test_removing_account_stops_capture_and_finalizes_partial_segment(self):
+        class FakeProcess:
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def send_signal(self, _signal):
+                self.returncode = 0
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        process = FakeProcess()
+        with patch("record.subprocess.Popen", return_value=process), patch(
+            "record.time.monotonic", return_value=100
+        ), patch("record.capture_has_data", return_value=True), patch(
+            "record.notify_dashboard_status"
+        ), patch(
+            "record.refresh_tracked_user", return_value=None
+        ), patch("record.upload_segments", return_value=2) as upload_segments:
+            next_part, stop_reason = run_capture(
+                "https://example.test/stream",
+                "room",
+                "alice",
+                "20261108_120000",
+                30,
+                1,
+                1000,
+                "host-key",
+                "owner/repo",
+                "token",
+                "secret",
+            )
+
+        self.assertEqual((next_part, stop_reason), (2, "untracked"))
+        upload_segments.assert_called_once()
         self.assertTrue(upload_segments.call_args.kwargs["finalized"])
         self.assertEqual(process.returncode, 0)
 

@@ -32,9 +32,11 @@ async function sessionCookie() {
 function createDatabase(initialAccounts = [], initialRecordings = []) {
   const accounts = new Map(initialAccounts.map((account) => [account.username, account]));
   const recordings = new Map(initialRecordings.map((recording) => [recording.drive_id, recording]));
+  const activity = [];
   let manualDispatchedAt = null;
   return {
     accounts,
+    activity,
     prepare(sql) {
       let values = [];
       return {
@@ -83,6 +85,19 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
             manualDispatchedAt = values[0];
             return { meta: { changes: 1 } };
           }
+          if (sql.includes("DELETE FROM accounts WHERE username")) {
+            return { meta: { changes: Number(accounts.delete(values[0])) } };
+          }
+          if (sql.includes("DELETE FROM account_status WHERE username")) {
+            return { meta: { changes: 1 } };
+          }
+          if (sql.includes("INSERT INTO activity_logs")) {
+            activity.unshift({ username: values[0], message: values[1] });
+            return { meta: { changes: 1 } };
+          }
+          if (sql.includes("DELETE FROM activity_logs")) {
+            return { meta: { changes: 0 } };
+          }
           throw new Error(`Unexpected run() query: ${sql}`);
         },
       };
@@ -96,6 +111,7 @@ function createEnvironment(database) {
     DASHBOARD_SESSION_SECRET: sessionSecret,
     GITHUB_PAT: "test-token",
     GITHUB_REPOSITORY: "owner/repo",
+    DASHBOARD_API_TOKEN: "dashboard-token",
   };
 }
 
@@ -155,6 +171,43 @@ async function backfillDurations(env) {
         "Content-Type": "application/json",
       },
       body: "{}",
+    }),
+    env,
+  });
+}
+
+async function removeAccount(env, username) {
+  return onRequest({
+    request: new Request(`https://livevault.example/api/accounts/${encodeURIComponent(username)}`, {
+      method: "DELETE",
+      headers: {
+        Cookie: await sessionCookie(),
+        Origin: "https://livevault.example",
+      },
+    }),
+    env,
+  });
+}
+
+async function checkInternalAccount(env, username) {
+  return onRequest({
+    request: new Request(
+      `https://livevault.example/api/internal/accounts/${encodeURIComponent(username)}`,
+      { headers: { Authorization: "Bearer dashboard-token" } },
+    ),
+    env,
+  });
+}
+
+async function reportInternalStatus(env, status) {
+  return onRequest({
+    request: new Request("https://livevault.example/api/internal/status", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer dashboard-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(status),
     }),
     env,
   });
@@ -254,6 +307,46 @@ test("per-account refresh only dispatches the requested active account", async (
     assert.deepEqual(dispatchBody, {
       ref: "main",
       inputs: { target_username: "alice" },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("removing an account immediately makes it inactive to recorder workers and logs the stop request", async () => {
+  const database = createDatabase([{ username: "alice", active: 1 }]);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith("/actions/variables/TRACKED")) {
+      return options.method === "GET"
+        ? new Response(JSON.stringify({ value: "alice" }), { status: 200 })
+        : new Response(null, { status: 204 });
+    }
+    throw new Error(`Unexpected GitHub request: ${url}`);
+  };
+
+  try {
+    const response = await removeAccount(createEnvironment(database), "alice");
+    assert.equal(response.status, 200);
+    assert.deepEqual(database.activity[0], {
+      username: "alice",
+      message: "Account removed; recorder stop requested",
+    });
+
+    const status = await checkInternalAccount(createEnvironment(database), "alice");
+    assert.equal(status.status, 200);
+    assert.deepEqual(await status.json(), { active: false });
+
+    const stopped = await reportInternalStatus(createEnvironment(database), {
+      username: "alice",
+      online: false,
+      recorder_status: "idle",
+      message: "Account was removed; recording stopped",
+    });
+    assert.equal(stopped.status, 202);
+    assert.deepEqual(database.activity[0], {
+      username: "alice",
+      message: "Account was removed; recording stopped",
     });
   } finally {
     globalThis.fetch = originalFetch;

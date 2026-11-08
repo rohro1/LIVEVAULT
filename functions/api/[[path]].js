@@ -490,7 +490,10 @@ async function internalStatus(request, env) {
   const account = await env.DB.prepare(
     "SELECT active FROM accounts WHERE username = ?",
   ).bind(username).first();
-  if (!account) return json({ ok: true, skipped: true }, 202);
+  if (!account) {
+    await addActivity(env, username, body.message);
+    return json({ ok: true, skipped: true }, 202);
+  }
   const recorderStatus = account.active ? body.recorder_status : "idle";
   await env.DB.prepare(
     `INSERT INTO account_status (username, online, recorder_status, checked_at)
@@ -516,6 +519,16 @@ async function handle(request, env) {
   if (path === "/api/login" && request.method === "POST") return login(request, env);
   if (path === "/api/internal/recordings" && request.method === "POST") {
     return internalRecording(request, env);
+  }
+  if (path.startsWith("/api/internal/accounts/") && request.method === "GET") {
+    await internalAuthorized(request, env);
+    const username = trackedUsername(
+      decodeURIComponent(path.slice("/api/internal/accounts/".length)),
+    );
+    const account = await env.DB.prepare(
+      "SELECT active FROM accounts WHERE username = ?",
+    ).bind(username).first();
+    return json({ active: account?.active === 1 });
   }
   if (path === "/api/internal/recordings/missing-duration" && request.method === "GET") {
     await internalAuthorized(request, env);
@@ -646,6 +659,9 @@ async function handle(request, env) {
     const result = await env.DB.prepare("DELETE FROM accounts WHERE username = ?")
       .bind(username).run();
     if (!result.meta.changes) throw new HttpError(404, "Account was not found");
+    await env.DB.prepare("DELETE FROM account_status WHERE username = ?")
+      .bind(username).run();
+    await addActivity(env, username, "Account removed; recorder stop requested");
     await syncTracked(env);
     return json({ ok: true });
   }

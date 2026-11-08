@@ -109,6 +109,10 @@ gets its own recorder job; jobs for different hosts can run concurrently, while
 duplicate jobs for the same host are serialized. GitHub may queue jobs when its
 available runner concurrency is exhausted. If TikTok reports a live before
 stream options are available, the resolver retries for up to 50 seconds.
+Each running recorder checks the current dashboard account list every five
+seconds. Removing an account logs the stop request; its active capture is
+interrupted, any captured part is finalized and uploaded, and the recorder logs
+that it stopped. A queued recorder for a removed account exits before capture.
 Repeated recorder failures use a per-account retry backoff that never exceeds
 the 5-minute monitor interval, without delaying recordings for other accounts.
 Successful

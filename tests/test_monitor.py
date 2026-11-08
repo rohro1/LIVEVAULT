@@ -295,13 +295,21 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(tracked_user(key, "bob, alice", "secret"), "alice")
         self.assertIsNone(tracked_user(key, "bob", "secret"))
 
-    def test_recorder_uses_injected_tracked_variable_without_api_access(self):
+    def test_recorder_checks_dashboard_after_resolving_injected_tracked_variable(self):
         key = account_key("alice", "secret")
-        with patch.dict("os.environ", {"TRACKED": "alice,bob"}), patch(
+        with patch.dict("os.environ", {
+            "TRACKED": "alice,bob",
+            "DASHBOARD_API_URL": "https://livevault.example",
+            "DASHBOARD_API_TOKEN": "dashboard-token",
+        }), patch(
             "record.github_request",
             side_effect=AssertionError("unexpected GitHub API call"),
-        ):
+        ), patch(
+            "record.api_request",
+            return_value=(200, {}, b'{"active":true}'),
+        ) as request:
             self.assertEqual(refresh_tracked_user(key, "repo", "token", "secret"), "alice")
+        self.assertIn("/api/internal/accounts/alice", request.call_args.args[0])
 
     def test_quiet_hours_are_disabled_by_default(self):
         self.assertFalse(in_quiet_hours("false", "", ""))

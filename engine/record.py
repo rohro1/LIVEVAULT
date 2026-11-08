@@ -25,6 +25,7 @@ ET = ZoneInfo("America/New_York")
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 CHUNK_SIZE = 8 * 1024 * 1024
 MAX_RUNTIME_SECONDS = 345 * 60
+ACCOUNT_CHECK_INTERVAL_SECONDS = 5
 
 
 class NetworkError(RuntimeError):
@@ -101,8 +102,32 @@ def refresh_tracked_user(host_key, repo, token, secret):
     if tracked is None:
         tracked = github_request(repo, token)
     username = tracked_user(host_key, tracked, secret)
-    if username:
-        print(f"::add-mask::{username}")
+    if not username:
+        return None
+
+    endpoint = os.environ.get("DASHBOARD_API_URL", "").rstrip("/")
+    dashboard_token = os.environ.get("DASHBOARD_API_TOKEN", "")
+    if not endpoint or not dashboard_token:
+        raise RuntimeError("Dashboard integration is not configured for recorder checks")
+    url = (
+        endpoint
+        + "/api/internal/accounts/"
+        + urllib.parse.quote(username, safe="")
+    )
+    status, _, raw = api_request(
+        url,
+        headers={"Authorization": f"Bearer {dashboard_token}"},
+        timeout=20,
+    )
+    if status != 200:
+        raise RuntimeError(f"Dashboard account check failed (HTTP {status})")
+    try:
+        active = json.loads(raw).get("active") is True
+    except (AttributeError, TypeError, ValueError):
+        raise RuntimeError("Dashboard account check returned an invalid response") from None
+    if not active:
+        return None
+    print(f"::add-mask::{username}")
     return username
 
 
@@ -487,7 +512,7 @@ def run_capture(
                             "FFmpeg did not capture stream data within 60 seconds: "
                             + ffmpeg_error_summary(directory / "ffmpeg.log")
                         )
-                    if now - last_account_check >= 60:
+                    if now - last_account_check >= ACCOUNT_CHECK_INTERVAL_SECONDS:
                         last_account_check = now
                         if not refresh_tracked_user(host_key, repo, token, secret):
                             stop_reason = "untracked"
@@ -502,7 +527,7 @@ def run_capture(
                     next_part = upload_segments(
                         directory, username, room_id, stamp, next_part, finalized=False
                     )
-                    time.sleep(20)
+                    time.sleep(ACCOUNT_CHECK_INTERVAL_SECONDS)
             except Exception as exc:
                 capture_error = exc
             finally:

@@ -516,7 +516,9 @@ accountsList.addEventListener("click", async (event) => {
       });
     }
     await loadDashboard();
-    showNotice("Account list updated.");
+    showNotice(button.dataset.action === "remove"
+      ? "Account removed; any active recorder will stop shortly and upload its captured part."
+      : "Account list updated.");
   } catch (error) {
     showNotice(error.message, true);
   }
