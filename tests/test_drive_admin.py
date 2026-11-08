@@ -1,4 +1,5 @@
 import io
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -7,10 +8,46 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 
-from drive_admin import backfill_durations, delete_recording, probe_drive_duration
+from drive_admin import (
+    backfill_durations,
+    dashboard_request,
+    delete_recording,
+    drive_file,
+    probe_drive_duration,
+)
 
 
 class DriveAdminTests(unittest.TestCase):
+    def test_dashboard_request_uses_ingest_bearer_token(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DASHBOARD_API_URL": "https://livevault.example",
+                "DASHBOARD_API_TOKEN": "dashboard-token",
+            },
+        ), patch(
+            "drive_admin.api_request",
+            return_value=(200, {}, b"{\"recordings\":[]}"),
+        ) as request:
+            dashboard_request("/api/internal/recordings/missing-duration")
+
+        self.assertEqual(
+            request.call_args.kwargs["headers"]["Authorization"],
+            "Bearer dashboard-token",
+        )
+
+    def test_drive_file_uses_google_access_token(self):
+        with patch(
+            "drive_admin.api_request",
+            return_value=(200, {}, b"{\"id\":\"drive_file_12345\"}"),
+        ) as request:
+            drive_file("drive_file_12345", "access-token")
+
+        self.assertEqual(
+            request.call_args.kwargs["headers"]["Authorization"],
+            "Bearer access-token",
+        )
+
     def test_video_duration_probe_downloads_from_drive_and_uses_ffprobe(self):
         response = io.BytesIO(b"video data")
 

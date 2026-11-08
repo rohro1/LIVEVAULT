@@ -18,7 +18,7 @@ def dashboard_request(path, method="GET", body=None):
     if not endpoint or not token:
         raise RuntimeError("Dashboard integration is not configured")
     headers = {
-        "Authorization": f"******",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
     status, _, raw = api_request(
@@ -40,7 +40,7 @@ def drive_file(file_id, token):
     url = f"{DRIVE_API}/files/{urllib.parse.quote(file_id, safe='')}?{query}"
     status, _, raw = api_request(
         url,
-        headers={"Authorization": f"******"},
+        headers={"Authorization": f"Bearer {token}"},
     )
     if status != 200:
         raise RuntimeError(f"Google Drive metadata request failed (HTTP {status})")
@@ -189,7 +189,7 @@ def delete_recording(file_id, token):
             status, _, _ = api_request(
                 url,
                 method="DELETE",
-                headers={"Authorization": f"******"},
+                headers={"Authorization": f"Bearer {token}"},
             )
             if status not in {200, 204}:
                 raise RuntimeError(f"Google Drive deletion failed (HTTP {status})")
