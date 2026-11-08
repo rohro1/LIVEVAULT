@@ -210,12 +210,13 @@ class MonitorTests(unittest.TestCase):
             },
         ]
 
-        self.assertEqual(recorder_retry_delay(runs, host_key, now), 9 * 60)
+        self.assertEqual(recorder_retry_delay(runs, host_key, now), 4 * 60)
         self.assertEqual(recorder_retry_delay(runs[:1], host_key, now), 4 * 60)
         self.assertEqual(
             recorder_retry_delay(
                 [{
                     **runs[0],
+                    "updated_at": "2026-11-08T11:59:00Z",
                     "conclusion": "success",
                 }],
                 host_key,
@@ -223,6 +224,21 @@ class MonitorTests(unittest.TestCase):
             ),
             0,
         )
+
+    def test_recorder_retry_delay_never_exceeds_one_monitor_interval(self):
+        now = dt.datetime(2026, 11, 8, 12, 0, tzinfo=dt.timezone.utc)
+        host_key = account_key("alice", "secret")
+        runs = [
+            {
+                "display_title": f"record-{host_key}",
+                "status": "completed",
+                "conclusion": "failure",
+                "updated_at": "2026-11-08T11:59:00Z",
+            }
+            for _ in range(10)
+        ]
+
+        self.assertEqual(recorder_retry_delay(runs, host_key, now), 4 * 60)
 
     def test_check_account_retries_a_transient_request_failure(self):
         with patch(

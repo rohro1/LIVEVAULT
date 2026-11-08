@@ -16,7 +16,7 @@ API = "https://api.github.com"
 USER_AGENT = "LIVEVAULT/1.0"
 ET = ZoneInfo("America/New_York")
 RECORDER_RETRY_BASE_SECONDS = 5 * 60
-RECORDER_RETRY_MAX_SECONDS = 60 * 60
+RECORDER_RETRY_MAX_SECONDS = 5 * 60
 
 
 def parse_accounts(value):
