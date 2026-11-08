@@ -36,6 +36,7 @@
               <h2>Accounts</h2>
               <p>Only lives hosted by a tracked account are recorded.</p>
             </div>
+            <button id="check-all" class="secondary" type="button">Check all now</button>
           </div>
           <form id="add-form" class="add-form">
             <label class="sr-only" for="username">TikTok username</label>
@@ -60,14 +61,17 @@
           <div class="section-title">
             <div>
               <h2>Recordings</h2>
-              <p>Latest 200 verified Google Drive uploads.</p>
+              <p>Latest 200 verified Google Drive uploads. Checks are limited to one manual scan per minute.</p>
             </div>
-            <button id="refresh" class="secondary" type="button">Refresh</button>
+            <div class="row-actions">
+              <button id="backfill-durations" class="secondary hidden" type="button">Fetch missing durations</button>
+              <button id="refresh" class="secondary" type="button">Refresh recordings</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>Account</th><th>Started (New York)</th><th>Part</th><th>Size</th><th>Drive</th><th>Duration</th></tr>
+                <tr><th>Account</th><th>Started (New York)</th><th>Part</th><th>Size</th><th>Drive</th><th>Duration</th><th>Actions</th></tr>
               </thead>
               <tbody id="recordings"></tbody>
             </table>

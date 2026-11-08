@@ -59,6 +59,13 @@ test("fails explicitly when the GitHub token lacks workflow access", async () =>
   );
 });
 
+test("explains how to restore an expired scheduler token", async () => {
+  await assert.rejects(
+    dispatchMonitor(env, async () => ({ ok: false, status: 401 })),
+    /replace the scheduler Worker secret with an Actions read\/write token/,
+  );
+});
+
 test("validates the repository before making requests", async () => {
   let called = false;
   await assert.rejects(

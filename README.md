@@ -130,10 +130,23 @@ Actions runs. The dashboard must be deployed once after code changes for these
 diagnostics and UI updates to appear; ongoing checks and status refreshes then
 run automatically.
 Adding a new account syncs the tracked list and queues an immediate monitor run;
-subsequent checks continue on the normal five-minute cadence. The Cloudflare
+the account-only refresh button checks just that account, while **Check all now**
+checks all active accounts. Manual checks share a one-per-minute throttle to
+limit Actions dispatches; scheduled checks remain on the normal five-minute
+cadence. The dashboard warns when recent monitor intervals are over 10 minutes
+or the GitHub API core budget falls below 20%. TikTok does not publish a stable
+public API quota for these status endpoints, so use the manual refresh throttle
+and avoid repeated refreshes if TikTok starts returning HTTP 429.
+The Cloudflare
 Pages `GITHUB_PAT` therefore needs repository **Variables: read and write** and
 **Actions: read and write** permissions. Replace an expired or unauthorized
 token there if dashboard diagnostics report HTTP 401.
+
+The recordings table can queue permanent Drive deletion after confirmation.
+**Fetch missing durations** uses Google Drive video metadata to backfill older
+rows; videos without processed duration metadata remain marked unavailable.
+These operations run through the `Manage Drive recordings` GitHub Actions
+workflow so Google OAuth credentials stay in Actions, not Cloudflare Pages.
 
 GitHub scheduled events may be delayed or unavailable. For a Cloudflare Cron
 fallback, create a fine-grained GitHub token limited to this repository with
@@ -187,10 +200,12 @@ changes sync the active list back to GitHub.
    ```
 
    For an existing installation, apply the one-time recording-duration
-   migration before deploying the updated dashboard:
+   and manual-monitor-throttle migrations before deploying the updated
+   dashboard:
 
    ```sh
    npx wrangler d1 execute livevault --remote --file=dashboard/add-recording-duration.sql
+   npx wrangler d1 execute livevault --remote --file=dashboard/add-monitor-manual-dispatches.sql
    ```
 
    Verify:
@@ -206,9 +221,8 @@ changes sync the active list back to GitHub.
    - Variable: `GITHUB_REPOSITORY` = `rohro1/LIVEVAULT`
    - `GITHUB_PAT` must be a fine-grained token limited to this repository with
      repository **Variables: read and write** and **Actions: read and write**
-     permissions. Actions write is used to queue an immediate monitor run after
-     adding an account; Actions read lets the dashboard display recent workflow
-     runs.
+     permissions. Actions write queues monitor checks and Drive operations;
+     Actions read lets the dashboard display recent workflow runs.
    - Use a different strong random value for each dashboard password/session
      secret/ingest token. `HOST_KEY_SECRET` must match the GitHub Actions
      secret of the same name.

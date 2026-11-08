@@ -31,6 +31,11 @@ export async function dispatchMonitor(env, request = fetch) {
     headers: githubHeaders(env),
   });
   if (!runsResponse.ok) {
+    if (runsResponse.status === 401 || runsResponse.status === 403) {
+      throw new Error(
+        `GitHub rejected MONITOR_GITHUB_PAT (HTTP ${runsResponse.status}); replace the scheduler Worker secret with an Actions read/write token`,
+      );
+    }
     throw new Error(
       `GitHub could not check monitor runs (HTTP ${runsResponse.status})`,
     );

@@ -115,6 +115,42 @@ class MonitorTests(unittest.TestCase):
             {account_key("alice", "secret"), account_key("bob", "secret")},
         )
 
+    def test_main_can_check_only_a_requested_tracked_account(self):
+        checked = []
+        environment = {
+            "TRACKED": "alice,bob",
+            "TARGET_USERNAME": "@bob",
+            "GITHUB_TOKEN": "token",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_REF_NAME": "main",
+            "HOST_KEY_SECRET": "secret",
+            "QUIET_HOURS_ENABLED": "false",
+        }
+        with patch.dict(os.environ, environment), patch(
+            "monitor.check_accounts",
+            side_effect=lambda accounts: checked.extend(accounts) or {"bob": False},
+        ), patch("monitor.request_json", return_value={"workflow_runs": []}), patch(
+            "monitor.update_dashboard_status"
+        ):
+            main()
+
+        self.assertEqual(checked, ["bob"])
+
+    def test_main_rejects_a_manual_target_not_in_tracked_accounts(self):
+        environment = {
+            "TRACKED": "alice,bob",
+            "TARGET_USERNAME": "carol",
+            "GITHUB_TOKEN": "token",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_REF_NAME": "main",
+            "HOST_KEY_SECRET": "secret",
+            "QUIET_HOURS_ENABLED": "false",
+        }
+        with patch.dict(os.environ, environment), self.assertRaisesRegex(
+            ValueError, "not in the tracked account list"
+        ):
+            main()
+
     def test_main_does_not_duplicate_an_active_recorder_for_one_account(self):
         dispatched = []
         alice_key = account_key("alice", "secret")

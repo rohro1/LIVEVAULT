@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS dashboard_settings (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS monitor_manual_dispatches (
+  scope TEXT PRIMARY KEY,
+  dispatched_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS account_status (
   username TEXT PRIMARY KEY,
   online INTEGER CHECK (online IN (0, 1) OR online IS NULL),

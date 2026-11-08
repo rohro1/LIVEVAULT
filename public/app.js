@@ -7,6 +7,12 @@ const activityList = document.querySelector("#activity");
 const logoutButton = document.querySelector("#logout");
 const diagnosticLog = document.querySelector("#diagnostic-log");
 const diagnosticConnection = document.querySelector("#diagnostic-connection");
+const checkAllButton = document.querySelector("#check-all");
+const backfillDurationsButton = document.querySelector("#backfill-durations");
+const recordingsRefreshButton = document.querySelector("#refresh");
+let cachedDiagnostics = null;
+let diagnosticsFetchedAt = 0;
+const DIAGNOSTICS_REFRESH_MS = 120_000;
 
 function showNotice(message, error = false) {
   notice.textContent = message;
@@ -70,7 +76,10 @@ function renderAccounts(accounts) {
   for (const account of accounts) {
     const row = document.createElement("li");
     const details = document.createElement("div");
-    const name = document.createElement("strong");
+    const name = document.createElement("a");
+    name.href = `https://www.tiktok.com/@${encodeURIComponent(account.username)}`;
+    name.target = "_blank";
+    name.rel = "noopener noreferrer";
     name.textContent = account.username;
     const status = document.createElement("span");
     status.className = "account-status";
@@ -120,7 +129,14 @@ function renderAccounts(accounts) {
     remove.textContent = "Remove";
     remove.dataset.action = "remove";
     remove.dataset.username = account.username;
-    actions.append(toggle, remove);
+    const check = document.createElement("button");
+    check.className = "secondary";
+    check.type = "button";
+    check.textContent = "Check now";
+    check.dataset.action = "check";
+    check.dataset.username = account.username;
+    check.disabled = !account.active;
+    actions.append(check, toggle, remove);
     row.append(details, actions);
     accountsList.append(row);
   }
@@ -157,7 +173,11 @@ function renderActivity(events) {
 
 function renderRecordings(recordings) {
   recordingsBody.replaceChildren();
+  let missingDurations = 0;
   for (const recording of recordings) {
+    if (!Number.isFinite(recording.duration_seconds) || recording.duration_seconds <= 0) {
+      missingDurations += 1;
+    }
     const row = document.createElement("tr");
     const started = recording.started_at;
     const formatted = started.length === 15
@@ -184,8 +204,21 @@ function renderRecordings(recordings) {
     const durationCell = document.createElement("td");
     durationCell.textContent = formatDuration(recording.duration_seconds);
     row.append(durationCell);
+    const actionsCell = document.createElement("td");
+    const remove = document.createElement("button");
+    remove.className = "danger";
+    remove.type = "button";
+    remove.textContent = "Delete";
+    remove.dataset.action = "delete-recording";
+    remove.dataset.driveId = recording.drive_id;
+    remove.dataset.filename = recording.filename;
+    actionsCell.append(remove);
+    row.append(actionsCell);
     recordingsBody.append(row);
   }
+  backfillDurationsButton.classList.toggle("hidden", missingDurations === 0);
+  backfillDurationsButton.disabled = missingDurations === 0;
+  backfillDurationsButton.textContent = `Fetch ${missingDurations} missing duration(s)`;
 }
 
 function diagnosticLine(container, message, state = "ok", url = "") {
@@ -213,6 +246,8 @@ function renderDiagnostics(data, events) {
   });
   diagnosticLine(diagnosticLog, `[${timestamp}] Diagnostics refreshed`);
   diagnosticLine(diagnosticLog, `[${timestamp}] Cloudflare Pages Function: responding`, "ok");
+  let monitorOverdue = false;
+  let recentWorkflowFailure = false;
 
   if (data.d1.status === "ok") {
     diagnosticLine(
@@ -291,11 +326,82 @@ function renderDiagnostics(data, events) {
       const state = outcome === "success" || outcome === "in_progress" || outcome === "queued"
         ? "ok"
         : "error";
+      const runTime = Date.parse(run.updated_at || run.created_at);
+      if (state === "error" && Date.now() - runTime <= 24 * 60 * 60_000) {
+        recentWorkflowFailure = true;
+      }
       diagnosticLine(
         diagnosticLog,
         `[${new Date(run.updated_at || run.created_at).toLocaleTimeString()}] GitHub ${name}: ${outcome}`,
         state,
         run.url,
+      );
+    }
+    if (name === "monitor") {
+      const recentRuns = workflow.runs
+        .map((run) => Date.parse(run.created_at))
+        .filter((runTime) => Number.isFinite(runTime) && Date.now() - runTime <= 24 * 60 * 60_000)
+        .sort((left, right) => left - right);
+      const lastRun = recentRuns.at(-1);
+      const ageMinutes = lastRun === undefined
+        ? null
+        : Math.max(0, Math.floor((Date.now() - lastRun) / 60_000));
+      if (ageMinutes === null) {
+        monitorOverdue = true;
+        diagnosticLine(
+          diagnosticLog,
+          `[${timestamp}] WARNING: no monitor workflow run was found in the last 24 hours`,
+          "error",
+        );
+      } else if (ageMinutes > 7) {
+        monitorOverdue = ageMinutes > 12;
+        diagnosticLine(
+          diagnosticLog,
+          `[${timestamp}] WARNING: latest monitor run was ${ageMinutes} minute(s) ago; expected about every 5 minutes`,
+          ageMinutes > 12 ? "error" : "warn",
+        );
+      }
+      const largestGapMinutes = recentRuns.slice(1).reduce(
+        (largest, runTime, index) =>
+          Math.max(largest, (runTime - recentRuns[index]) / 60_000),
+        0,
+      );
+      if (largestGapMinutes > 10) {
+        diagnosticLine(
+          diagnosticLog,
+          `[${timestamp}] WARNING: a recent gap between monitor runs was ${Math.round(largestGapMinutes)} minutes`,
+          largestGapMinutes > 20 ? "error" : "warn",
+        );
+        if (largestGapMinutes > 20) monitorOverdue = true;
+      }
+    }
+  }
+
+  const rateLimits = Object.values(data.workflows)
+    .map((workflow) => workflow.rate_limit)
+    .filter((rate) => rate && Number.isFinite(rate.remaining) && Number.isFinite(rate.limit));
+  if (rateLimits.length) {
+    const rate = rateLimits.reduce((lowest, current) =>
+      current.remaining < lowest.remaining ? current : lowest
+    );
+    const percent = Math.floor((rate.remaining / rate.limit) * 100);
+    diagnosticLine(
+      diagnosticLog,
+      `[${timestamp}] GitHub API core rate limit: ${rate.remaining}/${rate.limit} remaining (${percent}%)`,
+      percent <= 10 ? "error" : percent <= 20 ? "warn" : "ok",
+    );
+    if (Number.isFinite(rate.reset_at)) {
+      const resetTime = new Date(rate.reset_at * 1000).toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+      diagnosticLine(diagnosticLog, `[${timestamp}] GitHub API rate limit resets at ${resetTime}`);
+    }
+    if (percent <= 20) {
+      diagnosticLine(
+        diagnosticLog,
+        `[${timestamp}] Reduce manual checks while the GitHub API limit recovers.`,
+        "warn",
       );
     }
   }
@@ -316,22 +422,33 @@ function renderDiagnostics(data, events) {
   const failed = data.d1.status !== "ok" ||
     Object.values(data.integrations).some((configured) => configured === false) ||
     data.tracking_sync.status === "mismatch" ||
-    data.tracking_sync.status === "error";
+    data.tracking_sync.status === "error" ||
+    Object.values(data.workflows).some((workflow) => workflow.status !== "ok") ||
+    recentWorkflowFailure ||
+    monitorOverdue ||
+    (data.d1.last_account_check &&
+      Date.now() - new Date(data.d1.last_account_check).getTime() > 12 * 60_000);
   diagnosticConnection.textContent = failed ? "Issues detected" : "Connected";
   diagnosticConnection.className = `diagnostic-state ${failed ? "error" : "online"}`;
 }
 
 async function loadDashboard(quiet = false) {
+  const shouldRefreshDiagnostics = !cachedDiagnostics ||
+    Date.now() - diagnosticsFetchedAt >= DIAGNOSTICS_REFRESH_MS;
   const [accounts, recordings, activity, diagnostics] = await Promise.all([
     api("/api/accounts"),
     api("/api/recordings"),
     api("/api/activity"),
-    api("/api/diagnostics"),
+    shouldRefreshDiagnostics
+      ? api("/api/diagnostics")
+      : Promise.resolve(cachedDiagnostics),
   ]);
   renderAccounts(accounts.accounts);
   renderRecordings(recordings.recordings);
   renderActivity(activity.events);
-  renderDiagnostics(diagnostics.diagnostics, activity.events);
+  cachedDiagnostics = diagnostics;
+  if (shouldRefreshDiagnostics) diagnosticsFetchedAt = Date.now();
+  renderDiagnostics(cachedDiagnostics.diagnostics, activity.events);
   showDashboard();
   if (!quiet) showNotice("");
 }
@@ -378,12 +495,22 @@ accountsList.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action]");
   if (!button) return;
   try {
-    if (button.dataset.action === "toggle") {
+    if (button.dataset.action === "check") {
+      await api("/api/monitor", {
+        method: "POST",
+        body: JSON.stringify({ username: button.dataset.username }),
+      });
+      await loadDashboard(true);
+      showNotice(`Status check queued for ${button.dataset.username}.`);
+    } else if (button.dataset.action === "toggle") {
       await api(`/api/accounts/${encodeURIComponent(button.dataset.username)}`, {
         method: "PATCH",
         body: JSON.stringify({ active: button.dataset.active === "true" }),
       });
     } else {
+      if (!window.confirm(`Remove @${button.dataset.username} from LIVEVAULT? This will stop monitoring and recording it.`)) {
+        return;
+      }
       await api(`/api/accounts/${encodeURIComponent(button.dataset.username)}`, {
         method: "DELETE",
       });
@@ -395,11 +522,58 @@ accountsList.addEventListener("click", async (event) => {
   }
 });
 
-document.querySelector("#refresh").addEventListener("click", async () => {
+checkAllButton.addEventListener("click", async () => {
+  checkAllButton.disabled = true;
+  try {
+    await api("/api/monitor", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadDashboard(true);
+    showNotice("Status check queued for all active accounts. Manual checks are limited to one per minute.");
+  } catch (error) {
+    showNotice(error.message, true);
+  } finally {
+    checkAllButton.disabled = false;
+  }
+});
+
+recordingsRefreshButton.addEventListener("click", async () => {
   try {
     await loadDashboard();
   } catch (error) {
     showNotice(error.message, true);
+  }
+});
+
+backfillDurationsButton.addEventListener("click", async () => {
+  backfillDurationsButton.disabled = true;
+  try {
+    await api("/api/recordings/backfill-duration", { method: "POST", body: "{}" });
+    showNotice("Duration lookup queued. Existing recordings will update as Drive metadata is checked.");
+  } catch (error) {
+    showNotice(error.message, true);
+  } finally {
+    backfillDurationsButton.disabled = false;
+  }
+});
+
+recordingsBody.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-action='delete-recording']");
+  if (!button) return;
+  if (!window.confirm(`Permanently delete ${button.dataset.filename} from Google Drive and LIVEVAULT?`)) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    await api(`/api/recordings/${encodeURIComponent(button.dataset.driveId)}`, {
+      method: "DELETE",
+    });
+    showNotice("Recording deletion queued. The row will disappear after Google Drive confirms deletion.");
+  } catch (error) {
+    showNotice(error.message, true);
+  } finally {
+    button.disabled = false;
   }
 });
 

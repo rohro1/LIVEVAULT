@@ -200,6 +200,14 @@ def update_dashboard_status(username, online, recorder_status, message):
 
 def main():
     accounts = parse_accounts(os.environ.get("TRACKED", ""))
+    target_username = os.environ.get("TARGET_USERNAME", "").strip().lstrip("@").lower()
+    if target_username:
+        if not re.fullmatch(r"[a-z0-9._]{1,24}", target_username):
+            raise ValueError("TARGET_USERNAME is not a valid TikTok username")
+        if target_username not in accounts:
+            raise ValueError("TARGET_USERNAME is not in the tracked account list")
+        accounts = [target_username]
+
     token = os.environ.get("GITHUB_TOKEN", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     ref = os.environ.get("GITHUB_REF_NAME", "")

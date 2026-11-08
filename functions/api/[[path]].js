@@ -208,15 +208,53 @@ async function syncTracked(env) {
   if (!response.ok) throw new HttpError(502, `GitHub variable update failed (HTTP ${response.status})`);
 }
 
-async function dispatchMonitor(env) {
+async function dispatchMonitor(env, username = null) {
   const response = await githubRequest(
     env,
     "/actions/workflows/monitor.yml/dispatches",
     "POST",
-    { ref: "main" },
+    {
+      ref: "main",
+      ...(username ? { inputs: { target_username: username } } : {}),
+    },
   );
   if (response.status !== 204) {
     throw new HttpError(502, `Monitor dispatch failed (HTTP ${response.status})`);
+  }
+}
+
+async function queueManualMonitor(env, username = null) {
+  const now = Math.floor(Date.now() / 1000);
+  const result = await env.DB.prepare(
+    `INSERT INTO monitor_manual_dispatches (scope, dispatched_at) VALUES ('manual', ?)
+     ON CONFLICT(scope) DO UPDATE SET dispatched_at = excluded.dispatched_at
+     WHERE monitor_manual_dispatches.dispatched_at <= ?`,
+  ).bind(now, now - 60).run();
+  if (!result.meta.changes) {
+    const previous = await env.DB.prepare(
+      "SELECT dispatched_at FROM monitor_manual_dispatches WHERE scope = 'manual'",
+    ).first();
+    const retrySeconds = Math.max(1, (previous?.dispatched_at || now) + 60 - now);
+    throw new HttpError(429, `Please wait ${retrySeconds} seconds before another manual status check`);
+  }
+  await dispatchMonitor(env, username);
+}
+
+async function dispatchDriveMaintenance(env, action, driveId = null) {
+  const response = await githubRequest(
+    env,
+    "/actions/workflows/drive-admin.yml/dispatches",
+    "POST",
+    {
+      ref: "main",
+      inputs: {
+        action,
+        ...(driveId ? { drive_id: driveId } : {}),
+      },
+    },
+  );
+  if (response.status !== 204) {
+    throw new HttpError(502, `Drive action dispatch failed (HTTP ${response.status})`);
   }
 }
 
@@ -270,11 +308,17 @@ async function workflowDiagnostics(env, workflow) {
   try {
     const response = await githubRequest(
       env,
-      `/actions/workflows/${workflow}.yml/runs?per_page=5`,
+      `/actions/workflows/${workflow}.yml/runs?per_page=20`,
     );
     const result = await response.json();
+    const remaining = response.headers.get("X-RateLimit-Remaining");
+    const limit = response.headers.get("X-RateLimit-Limit");
+    const reset = response.headers.get("X-RateLimit-Reset");
     return {
       status: "ok",
+      rate_limit: remaining && limit && reset
+        ? { remaining: Number(remaining), limit: Number(limit), reset_at: Number(reset) }
+        : null,
       runs: (result.workflow_runs || []).map((run) => ({
         status: run.status,
         conclusion: run.conclusion,
@@ -473,6 +517,49 @@ async function handle(request, env) {
   if (path === "/api/internal/recordings" && request.method === "POST") {
     return internalRecording(request, env);
   }
+  if (path === "/api/internal/recordings/missing-duration" && request.method === "GET") {
+    await internalAuthorized(request, env);
+    const rows = await env.DB.prepare(
+      `SELECT drive_id, username, filename
+       FROM recordings WHERE duration_seconds <= 0
+       ORDER BY created_at ASC LIMIT 200`,
+    ).all();
+    return json({ recordings: rows.results || [] });
+  }
+  if (path.startsWith("/api/internal/recordings/") && request.method === "PATCH") {
+    await internalAuthorized(request, env);
+    const driveId = decodeURIComponent(path.slice("/api/internal/recordings/".length));
+    const body = await readJson(request);
+    if (!driveId || typeof body.duration_seconds !== "number" ||
+        !Number.isFinite(body.duration_seconds) || body.duration_seconds <= 0) {
+      throw new HttpError(400, "Recording duration update is invalid");
+    }
+    const result = await env.DB.prepare(
+      "UPDATE recordings SET duration_seconds = ? WHERE drive_id = ? AND duration_seconds <= 0",
+    ).bind(body.duration_seconds, driveId).run();
+    if (!result.meta.changes) return json({ ok: true, skipped: true }, 202);
+    return json({ ok: true });
+  }
+  if (path.startsWith("/api/internal/recordings/") && request.method === "GET") {
+    await internalAuthorized(request, env);
+    const driveId = decodeURIComponent(path.slice("/api/internal/recordings/".length));
+    const recording = await env.DB.prepare(
+      "SELECT drive_id, filename FROM recordings WHERE drive_id = ?",
+    ).bind(driveId).first();
+    if (!recording) throw new HttpError(404, "Recording was not found");
+    return json(recording);
+  }
+  if (path.startsWith("/api/internal/recordings/") && request.method === "DELETE") {
+    await internalAuthorized(request, env);
+    const driveId = decodeURIComponent(path.slice("/api/internal/recordings/".length));
+    const recording = await env.DB.prepare(
+      "SELECT username, filename FROM recordings WHERE drive_id = ?",
+    ).bind(driveId).first();
+    if (!recording) return json({ ok: true, skipped: true }, 202);
+    await env.DB.prepare("DELETE FROM recordings WHERE drive_id = ?").bind(driveId).run();
+    await addActivity(env, recording.username, `Deleted recording ${recording.filename}`);
+    return json({ ok: true });
+  }
   if (path === "/api/internal/status" && request.method === "POST") {
     return internalStatus(request, env);
   }
@@ -514,7 +601,7 @@ async function handle(request, env) {
     const shouldCheckNow = !existing || existing.active !== 1 || statusIsStale;
     if (shouldCheckNow) {
       try {
-        await dispatchMonitor(env);
+        await queueManualMonitor(env, username);
       } catch (error) {
         const detail = error instanceof Error ? error.message : "GitHub API request failed";
         throw new HttpError(
@@ -524,6 +611,23 @@ async function handle(request, env) {
       }
     }
     return json({ ok: true, check_queued: shouldCheckNow }, 201);
+  }
+  if (path === "/api/monitor" && request.method === "POST") {
+    requireSameOrigin(request);
+    const body = await readJson(request);
+    const username = body.username === undefined || body.username === null || body.username === ""
+      ? null
+      : trackedUsername(body.username);
+    if (username) {
+      const account = await env.DB.prepare(
+        "SELECT active FROM accounts WHERE username = ?",
+      ).bind(username).first();
+      if (!account || account.active !== 1) {
+        throw new HttpError(404, "Active tracked account was not found");
+      }
+    }
+    await queueManualMonitor(env, username);
+    return json({ ok: true, queued: true, username }, 202);
   }
   if (path.startsWith("/api/accounts/") && request.method === "PATCH") {
     requireSameOrigin(request);
@@ -547,13 +651,32 @@ async function handle(request, env) {
   }
   if (path === "/api/recordings" && request.method === "GET") {
     const rows = await env.DB.prepare(
-      `SELECT username, room_id, started_at, part_number, filename, drive_url, file_size,
+      `SELECT drive_id, username, room_id, started_at, part_number, filename, drive_url, file_size,
               duration_seconds, created_at
        FROM recordings
        ORDER BY started_at DESC, username ASC, part_number ASC, created_at ASC
        LIMIT 200`,
     ).all();
-    return json({ recordings: rows.results || [] });
+    const recordings = rows.results || [];
+    return json({
+      recordings,
+      missing_durations: recordings.filter((recording) => recording.duration_seconds <= 0).length,
+    });
+  }
+  if (path === "/api/recordings/backfill-duration" && request.method === "POST") {
+    requireSameOrigin(request);
+    await dispatchDriveMaintenance(env, "backfill-durations");
+    return json({ ok: true, queued: true }, 202);
+  }
+  if (path.startsWith("/api/recordings/") && request.method === "DELETE") {
+    requireSameOrigin(request);
+    const driveId = decodeURIComponent(path.slice("/api/recordings/".length));
+    const recording = await env.DB.prepare(
+      "SELECT drive_id FROM recordings WHERE drive_id = ?",
+    ).bind(driveId).first();
+    if (!recording) throw new HttpError(404, "Recording was not found");
+    await dispatchDriveMaintenance(env, "delete", driveId);
+    return json({ ok: true, queued: true }, 202);
   }
   if (path === "/api/activity" && request.method === "GET") {
     const rows = await env.DB.prepare(
