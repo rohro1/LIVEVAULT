@@ -32,7 +32,9 @@ class NetworkError(RuntimeError):
 
 
 def api_request(url, method="GET", headers=None, body=None, timeout=60):
-    request = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
+    request_headers = {"User-Agent": "LIVEVAULT/1.0"}
+    request_headers.update(headers or {})
+    request = urllib.request.Request(url, data=body, headers=request_headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.status, response.headers, response.read()

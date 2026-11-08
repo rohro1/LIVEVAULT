@@ -99,6 +99,7 @@ def notify_dashboard(username, online, recorder_status, message):
         },
         method="POST",
     )
+    request.add_header("User-Agent", USER_AGENT)
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             if response.status not in {200, 202}:
