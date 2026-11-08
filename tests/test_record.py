@@ -6,7 +6,13 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 
-from record import api_request, capture_has_data, ffmpeg_error_summary
+from record import (
+    api_request,
+    capture_has_data,
+    ffmpeg_error_summary,
+    resolve_stream,
+    save_failure_reason,
+)
 
 
 class RecorderTests(unittest.TestCase):
@@ -43,6 +49,31 @@ class RecorderTests(unittest.TestCase):
 
         self.assertIn("[URL]", summary)
         self.assertNotIn("secret", summary)
+
+    def test_resolver_error_is_preserved_for_failure_reporting(self):
+        result = Mock(returncode=3, stdout=(
+            "RESULT: resolver error: TikTok stream request returned HTTP 403 after 6 checks\n"
+        ))
+        with patch("record.subprocess.run", return_value=result), self.assertRaises(
+            RuntimeError,
+        ) as error:
+            resolve_stream("alice", Path("."))
+
+        self.assertIn("HTTP 403", str(error.exception))
+
+    def test_failure_reason_is_flattened_and_urls_are_redacted(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / "github_env"
+            with patch.dict("os.environ", {"GITHUB_ENV": str(env_file)}):
+                save_failure_reason(
+                    RuntimeError("Stream failed\nhttps://example.test/live?token=secret")
+                )
+
+            saved = env_file.read_text()
+
+        self.assertIn("Stream failed [URL]", saved)
+        self.assertNotIn("\nhttps://", saved)
+        self.assertNotIn("secret", saved)
 
 
 if __name__ == "__main__":

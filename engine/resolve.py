@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 from tiktok import parse_live_status, request_headers, status_url, stream_candidates
@@ -20,37 +21,55 @@ def main():
     roomfile = sys.argv[3] if len(sys.argv) > 3 else None
     mode = os.environ.get("QUALITY", "compat")
     pool = []
+    last_error = "TikTok reported a live room but returned no usable stream URL data"
     for attempt in range(1, STREAM_ATTEMPTS + 1):
-        d = get_json(user)
-        data = d.get("data") or {}
-        user_data = data.get("user") or {}
-        status = user_data.get("status")
-        if not parse_live_status(d):
-            print(f"RESULT: user status={status}; no active stream detected")
-            print("RESULT: not live, nothing to record")
-            sys.exit(2)
-        print(f"RESULT: active stream detected (user status={status})")
-        if roomfile:
-            with open(roomfile, "w") as f:
-                f.write(str(user_data.get("roomId") or ""))
-        cands, seen = stream_candidates(data.get("liveRoom") or {})
-        print(f"RESULT: stream data layout (key names only): {seen}")
-        print(f"RESULT: found {len(cands)} stream options: " +
-              ", ".join(f"{c['codec']}/{c['quality']}/{c['fmt']}" for c in cands))
-        if mode == "compat":
-            pool = [c for c in cands if c["codec"] == "h264"] or cands
-        else:
-            pool = cands
-        if pool:
-            break
+        try:
+            d = get_json(user)
+            data = d.get("data") or {}
+            user_data = data.get("user") or {}
+            status = user_data.get("status")
+            if not parse_live_status(d):
+                print(f"RESULT: user status={status}; no active stream detected")
+                print("RESULT: not live, nothing to record")
+                sys.exit(2)
+            print(f"RESULT: active stream detected (user status={status})")
+            if roomfile:
+                with open(roomfile, "w") as f:
+                    f.write(str(user_data.get("roomId") or ""))
+            cands, seen = stream_candidates(data.get("liveRoom") or {})
+            print(f"RESULT: stream data layout (key names only): {seen}")
+            print(f"RESULT: found {len(cands)} stream options: " +
+                  ", ".join(f"{c['codec']}/{c['quality']}/{c['fmt']}" for c in cands))
+            if mode == "compat":
+                pool = [c for c in cands if c["codec"] == "h264"] or cands
+            else:
+                pool = cands
+            if pool:
+                break
+            last_error = "TikTok reports this account is live but returned no stream URL data"
+        except urllib.error.HTTPError as exc:
+            last_error = f"TikTok stream request returned HTTP {exc.code}"
+        except urllib.error.URLError as exc:
+            last_error = (
+                "TikTok stream request failed "
+                f"({exc.reason.__class__.__name__})"
+            )
+        except (TimeoutError, ValueError, UnicodeError) as exc:
+            last_error = (
+                "TikTok stream response was invalid "
+                f"({type(exc).__name__})"
+            )
         if attempt < STREAM_ATTEMPTS:
             print(
-                f"RESULT: live stream data unavailable; retrying "
+                f"RESULT: {last_error}; retrying "
                 f"({attempt}/{STREAM_ATTEMPTS - 1}) in {STREAM_RETRY_SECONDS} seconds"
             )
             time.sleep(STREAM_RETRY_SECONDS)
     if not pool:
-        print("RESULT: no usable stream found")
+        print(
+            f"RESULT: resolver error: {last_error} after "
+            f"{STREAM_ATTEMPTS} checks"
+        )
         sys.exit(3)
     best = sorted(pool, key=lambda c: (RANK.get(c["quality"], 9), c["fmt"] != "flv"))[0]
     print(f"RESULT: chosen {best['codec']}/{best['quality']}/{best['fmt']}")

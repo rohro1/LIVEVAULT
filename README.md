@@ -116,7 +116,8 @@ If a TikTok status request fails, that account is shown as unknown/error and
 other tracked accounts are still checked. The recorder is shown as active only
 after FFmpeg produces stream data; startup failures are reported with sanitized
 diagnostics. Failed recorder jobs are marked as errors in the dashboard when
-its API URL and token are configured.
+its API URL and token are configured; the activity message includes a
+URL-sanitized failure reason when the recorder can identify one.
 The dashboard's System diagnostics panel checks Cloudflare/D1 health, required
 integration configuration, tracked-account synchronization, and recent GitHub
 Actions runs. The dashboard must be deployed once after code changes for these

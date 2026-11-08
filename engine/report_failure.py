@@ -34,7 +34,10 @@ def main():
             username,
             None,
             "error",
-            "Recorder failed; see the GitHub Actions run for details",
+            (
+                "Recorder failed: "
+                + os.environ.get("LIVEVAULT_FAILURE_REASON", "see GitHub Actions run")
+            )[:200],
         )
     except (RuntimeError, ValueError, OSError) as exc:
         print(f"::warning::Recorder failure could not be reported ({type(exc).__name__})")

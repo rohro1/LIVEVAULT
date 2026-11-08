@@ -314,7 +314,15 @@ def resolve_stream(username, directory):
     if result.returncode == 2:
         return None
     if result.returncode != 0:
-        raise RuntimeError("Stream resolver failed; see the preceding RESULT lines")
+        failure = next(
+            (
+                line.removeprefix("RESULT: resolver error: ")
+                for line in result.stdout.splitlines()
+                if line.startswith("RESULT: resolver error: ")
+            ),
+            "Stream resolver failed; see the preceding RESULT lines",
+        )
+        raise RuntimeError(failure)
     stream_url = url_file.read_text().strip()
     room_id = room_file.read_text().strip()
     if not stream_url or not room_id:
@@ -356,6 +364,16 @@ def ffmpeg_error_summary(path):
     details = re.sub(r"https?://\S+", "[URL]", details)
     details = " ".join(details.split())
     return details[-1000:] or "no diagnostic output"
+
+
+def save_failure_reason(error):
+    env_file = os.environ.get("GITHUB_ENV")
+    if not env_file:
+        return
+    details = re.sub(r"https?://\S+", "[URL]", str(error))
+    details = " ".join(details.split())[:150] or type(error).__name__
+    with open(env_file, "a", encoding="utf-8") as stream:
+        stream.write(f"LIVEVAULT_FAILURE_REASON={details}\n")
 
 
 def upload_segments(directory, username, room_id, stamp, next_part, finalized):
@@ -597,4 +615,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        save_failure_reason(exc)
+        raise
