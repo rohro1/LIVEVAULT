@@ -122,8 +122,10 @@ Recording parts target 30 minutes by default. A part can be shorter if the live
 ends or the stream disconnects; the dashboard displays each uploaded video's
 measured duration so interruptions are visible. Parts are grouped by newest
 recording session with their part numbers in ascending order.
-If a TikTok status request fails, that account is shown as unknown/error and
-other tracked accounts are still checked. The recorder is shown as active only
+If a recorder status check fails, that account's prior Online/Offline result is
+cleared; account results older than seven minutes are shown as unknown/stale.
+Other tracked accounts are still checked.
+The recorder is shown as active only
 after FFmpeg produces stream data; startup failures are reported with sanitized
 diagnostics. Failed recorder jobs are marked as errors in the dashboard when
 its API URL and token are configured; the activity message includes a

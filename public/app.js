@@ -13,6 +13,7 @@ const recordingsRefreshButton = document.querySelector("#refresh");
 let cachedDiagnostics = null;
 let diagnosticsFetchedAt = 0;
 const DIAGNOSTICS_REFRESH_MS = 120_000;
+const ACCOUNT_STATUS_STALE_MS = 7 * 60_000;
 
 function showNotice(message, error = false) {
   notice.textContent = message;
@@ -84,14 +85,25 @@ function renderAccounts(accounts) {
     const status = document.createElement("span");
     status.className = "account-status";
     const online = document.createElement("span");
-    online.className = `status-pill ${!account.active ? "unknown" : account.online === true ? "online" : account.online === false ? "offline" : "unknown"}`;
+    const hasChecked = Boolean(account.checked_at);
+    const checkedAt = hasChecked ? Date.parse(account.checked_at) : NaN;
+    const stale = hasChecked && (!Number.isFinite(checkedAt) ||
+      Date.now() - checkedAt > ACCOUNT_STATUS_STALE_MS);
+    const statusClass = !account.active || !hasChecked || stale || account.online === null
+      ? "unknown"
+      : account.online ? "online" : "offline";
+    online.className = `status-pill ${statusClass}`;
     online.textContent = !account.active
       ? "Paused"
-      : account.online === true
-        ? "Online"
-        : account.online === false
-          ? "Offline"
-          : account.checked_at ? "Unknown" : "Not checked";
+      : !hasChecked
+        ? "Not checked"
+        : stale
+          ? "Unknown (stale)"
+          : account.online === true
+            ? "Online"
+            : account.online === false
+              ? "Offline"
+              : "Unknown";
     const recording = document.createElement("span");
     recording.className = `status-pill ${account.recorder_status === "recording" ? "recording" : ""}`;
     recording.textContent = account.recorder_status === "recording"
@@ -109,7 +121,7 @@ function renderAccounts(accounts) {
         hour: "numeric",
         minute: "2-digit",
         timeZone: "America/New_York",
-      })} ET`;
+      })} ET${stale ? " (stale)" : ""}`;
       status.append(checked);
     }
     details.append(name, status);

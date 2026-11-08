@@ -31,11 +31,20 @@ async function sessionCookie() {
 
 function createDatabase(initialAccounts = [], initialRecordings = []) {
   const accounts = new Map(initialAccounts.map((account) => [account.username, account]));
+  const accountStatuses = new Map(initialAccounts.map((account) => [
+    account.username,
+    {
+      online: account.online ?? null,
+      recorder_status: account.recorder_status || "idle",
+      checked_at: account.checked_at || null,
+    },
+  ]));
   const recordings = new Map(initialRecordings.map((recording) => [recording.drive_id, recording]));
   const activity = [];
   let manualDispatchedAt = null;
   return {
     accounts,
+    accountStatuses,
     activity,
     prepare(sql) {
       let values = [];
@@ -89,6 +98,15 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
             return { meta: { changes: Number(accounts.delete(values[0])) } };
           }
           if (sql.includes("DELETE FROM account_status WHERE username")) {
+            accountStatuses.delete(values[0]);
+            return { meta: { changes: 1 } };
+          }
+          if (sql.includes("INSERT INTO account_status")) {
+            accountStatuses.set(values[0], {
+              online: values[1],
+              recorder_status: values[2],
+              checked_at: new Date().toISOString(),
+            });
             return { meta: { changes: 1 } };
           }
           if (sql.includes("INSERT INTO activity_logs")) {
@@ -355,6 +373,31 @@ test("removing an account immediately makes it inactive to recorder workers and 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("a failed recorder check clears an earlier online result", async () => {
+  const database = createDatabase([{
+    username: "alice",
+    active: 1,
+    online: 1,
+    recorder_status: "recording",
+    checked_at: "2026-11-08T22:00:00.000Z",
+  }]);
+
+  const response = await reportInternalStatus(createEnvironment(database), {
+    username: "alice",
+    online: null,
+    recorder_status: "error",
+    message: "Recorder could not obtain a stream URL",
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(database.accountStatuses.get("alice").online, null);
+  assert.equal(database.accountStatuses.get("alice").recorder_status, "error");
+  assert.deepEqual(database.activity[0], {
+    username: "alice",
+    message: "Recorder could not obtain a stream URL",
+  });
 });
 
 test("manual checks are rate limited to one dispatched scan per minute", async () => {
