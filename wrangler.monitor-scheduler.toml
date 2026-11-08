@@ -1,0 +1,11 @@
+name = "livevault-monitor-scheduler"
+main = "workers/monitor-scheduler.mjs"
+compatibility_date = "2026-11-08"
+workers_dev = false
+
+[vars]
+GITHUB_REPOSITORY = "rohro1/LIVEVAULT"
+GITHUB_REF = "main"
+
+[triggers]
+crons = ["*/5 * * * *"]

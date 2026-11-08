@@ -126,6 +126,20 @@ Actions runs. The dashboard must be deployed once after code changes for these
 diagnostics and UI updates to appear; ongoing checks and status refreshes then
 run automatically.
 
+GitHub scheduled events may be delayed or unavailable. For a Cloudflare Cron
+fallback, create a fine-grained GitHub token limited to this repository with
+**Actions: read and write** permission. Store it as the separate Worker secret
+`MONITOR_GITHUB_PAT` and deploy the scheduler once:
+
+```sh
+npx wrangler secret put MONITOR_GITHUB_PAT --config wrangler.monitor-scheduler.toml
+npx wrangler deploy --config wrangler.monitor-scheduler.toml
+```
+
+The Worker checks for an active monitor run before dispatching another one.
+Keep this token separate from the dashboard's `GITHUB_PAT`; it only needs
+workflow read/dispatch access, not repository-variable access.
+
 If the repository is public, workflow metadata and logs are public too. Logs
 avoid account names and stream URLs; recorder job names use secret-keyed opaque
 account identifiers. The destination Drive files remain private unless their
