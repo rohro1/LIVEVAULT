@@ -32,14 +32,14 @@ def working_response():
 class GatedAccountTests(unittest.TestCase):
     @patch("resolve.time.sleep", return_value=None)
     @patch("resolve.get_json")
-    def test_gated_account_fails_fast_with_clear_message(self, mock_get, mock_sleep):
+    def test_gated_account_retries_all_attempts_with_clear_diagnostics(self, mock_get, mock_sleep):
         mock_get.return_value = gated_response()
         with self.assertRaises(SystemExit) as ctx:
-            with patch("sys.argv", ["resolve.py", "someuser", "/tmp/out.url"]):
+            with patch("sys.argv", ["resolve.py", "shadow020930", "/tmp/out.url"]):
                 resolve.main()
         self.assertEqual(ctx.exception.code, 3)
-        self.assertEqual(mock_get.call_count, resolve.GATED_ATTEMPTS)
-        self.assertEqual(mock_sleep.call_count, resolve.GATED_ATTEMPTS - 1)
+        self.assertEqual(mock_get.call_count, resolve.STREAM_ATTEMPTS)
+        self.assertEqual(mock_sleep.call_count, resolve.STREAM_ATTEMPTS - 1)
 
     @patch("resolve.time.sleep", return_value=None)
     @patch("resolve.get_json")

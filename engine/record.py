@@ -26,6 +26,19 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 CHUNK_SIZE = 8 * 1024 * 1024
 MAX_RUNTIME_SECONDS = 345 * 60
 ACCOUNT_CHECK_INTERVAL_SECONDS = 5
+_LAST_ACCOUNT_STATE = {}
+
+
+def _log_account_state(username, active, source):
+    if _LAST_ACCOUNT_STATE.get(username) is active:
+        return
+    _LAST_ACCOUNT_STATE[username] = active
+    checked_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    state = "active" if active else "removed_or_inactive"
+    print(
+        f"EVENT: recorder_account_state at={checked_at} "
+        f"username=@{username} state={state} source={source}"
+    )
 
 
 class NetworkError(RuntimeError):
@@ -125,9 +138,9 @@ def refresh_tracked_user(host_key, repo, token, secret):
         active = json.loads(raw).get("active") is True
     except (AttributeError, TypeError, ValueError):
         raise RuntimeError("Dashboard account check returned an invalid response") from None
+    _log_account_state(username, active, "dashboard")
     if not active:
         return None
-    print(f"::add-mask::{username}")
     return username
 
 

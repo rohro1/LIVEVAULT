@@ -166,10 +166,11 @@ The Worker checks for an active monitor run before dispatching another one.
 Keep this token separate from the dashboard's `GITHUB_PAT`; it only needs
 workflow read/dispatch access, not repository-variable access.
 
-If the repository is public, workflow metadata and logs are public too. Logs
-avoid account names and stream URLs; recorder job names use secret-keyed opaque
-account identifiers. The destination Drive files remain private unless their
-owner changes sharing settings.
+If the repository is public, workflow metadata and logs are public too. Monitor
+and recorder diagnostic events include tracked usernames and UTC timestamps;
+stream URLs and room IDs are omitted, and recorder job names use secret-keyed
+opaque account identifiers. The destination Drive files remain private unless
+their owner changes sharing settings.
 
 ## Deploy the dashboard
 

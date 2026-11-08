@@ -236,6 +236,10 @@ test("adding an unchecked account queues an immediate monitor run", async () => 
       ref: "main",
       inputs: { target_username: "alice" },
     });
+    assert.deepEqual(database.activity.map((event) => event.message), [
+      "Immediate account status check queued",
+      "Account added; monitoring enabled",
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

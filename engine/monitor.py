@@ -217,9 +217,6 @@ def main():
     if accounts and not secret:
         raise RuntimeError("HOST_KEY_SECRET is required when TRACKED is non-empty")
 
-    for username in accounts:
-        print(f"::add-mask::{username}")
-
     quiet_hours = in_quiet_hours(
         os.environ.get("QUIET_HOURS_ENABLED", "false"),
         os.environ.get("QUIET_START", ""),
@@ -250,12 +247,22 @@ def main():
         online = live_results[username]
         if isinstance(online, Exception):
             check_failures += 1
+            checked_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+            print(
+                f"EVENT: monitor_account_status at={checked_at} "
+                f"username=@{username} result=error reason={online}"
+            )
             print(f"WARNING: live status check failed for a tracked account: {online}")
             if not update_dashboard_status(
                 username, None, "error", f"Live status check failed: {online}"
             ):
                 dashboard_failures += 1
             continue
+        checked_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        print(
+            f"EVENT: monitor_account_status at={checked_at} "
+            f"username=@{username} result={'online' if online else 'offline'}"
+        )
         if online:
             live_count += 1
         if key in active:

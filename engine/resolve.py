@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import os
 import re
@@ -11,7 +12,6 @@ from tiktok import parse_live_status, request_headers, status_url, stream_candid
 RANK = {"origin": 0, "uhd_60": 1, "uhd": 1, "hd_60": 2, "hd": 2, "sd": 3, "ld": 4, "md": 5}
 STREAM_ATTEMPTS = 6
 STREAM_RETRY_SECONDS = 10
-GATED_ATTEMPTS = 2  # fail fast when TikTok sends no stream-data keys at all
 
 def get_json(username):
     req = urllib.request.Request(status_url(username), headers=request_headers(username))
@@ -55,9 +55,13 @@ def main():
     roomfile = sys.argv[3] if len(sys.argv) > 3 else None
     mode = os.environ.get("QUALITY", "compat")
     pool = []
-    gated_attempts = 0
-    last_error = "TikTok reported a live room but returned no usable stream URL data"
+    last_error = "TikTok did not return usable stream URL data"
     for attempt in range(1, STREAM_ATTEMPTS + 1):
+        checked_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        print(
+            f"EVENT: resolver_attempt at={checked_at} "
+            f"username=@{user} attempt={attempt}/{STREAM_ATTEMPTS}"
+        )
         try:
             d = get_json(user)
             data = d.get("data") or {}
@@ -71,7 +75,8 @@ def main():
             if roomfile:
                 with open(roomfile, "w") as f:
                     f.write(str(user_data.get("roomId") or ""))
-            cands, seen = stream_candidates(data.get("liveRoom") or {})
+            room = data.get("liveRoom") or {}
+            cands, seen = stream_candidates(room)
             print(f"RESULT: stream data layout (key names only): {seen}")
             print(f"RESULT: found {len(cands)} stream options: " +
                   ", ".join(f"{c['codec']}/{c['quality']}/{c['fmt']}" for c in cands))
@@ -81,34 +86,35 @@ def main():
                 pool = cands
             if pool:
                 break
-            room = data.get("liveRoom") or {}
-            if "streamData" not in room and "hevcStreamData" not in room:
-                gated_attempts += 1
-                last_error = (
-                    "TikTok lists this account as live but provided no stream data; "
-                    "this usually means the live requires a logged-in session to view, "
-                    "or has not actually started broadcasting"
-                )
-                if gated_attempts >= GATED_ATTEMPTS:
-                    print("RESULT: empty-stream diagnostics: " +
-                          json.dumps(describe_response(d), sort_keys=True))
-                    break
-            else:
-                if attempt in (1, STREAM_ATTEMPTS):
-                    print("RESULT: empty-stream diagnostics: " +
-                          json.dumps(describe_response(d), sort_keys=True))
-                last_error = "TikTok reports this account is live but returned no stream URL data"
+            print("RESULT: empty-stream diagnostics: " +
+                  json.dumps(describe_response(d), sort_keys=True))
+            last_error = (
+                "TikTok reports this account as live but returned no usable "
+                "streamData/hevcStreamData URL"
+            )
         except urllib.error.HTTPError as exc:
             last_error = f"TikTok stream request returned HTTP {exc.code}"
+            print(
+                f"RESULT: resolver request failed at={checked_at} "
+                f"username=@{user} http_status={exc.code}"
+            )
         except urllib.error.URLError as exc:
             last_error = (
                 "TikTok stream request failed "
                 f"({exc.reason.__class__.__name__})"
             )
+            print(
+                f"RESULT: resolver request failed at={checked_at} "
+                f"username=@{user} reason={exc.reason.__class__.__name__}"
+            )
         except (TimeoutError, ValueError, UnicodeError) as exc:
             last_error = (
                 "TikTok stream response was invalid "
                 f"({type(exc).__name__})"
+            )
+            print(
+                f"RESULT: resolver response invalid at={checked_at} "
+                f"username=@{user} reason={type(exc).__name__}"
             )
         if attempt < STREAM_ATTEMPTS:
             print(

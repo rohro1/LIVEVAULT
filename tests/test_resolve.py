@@ -91,7 +91,7 @@ class ResolveTests(unittest.TestCase):
             self.assertEqual(stream_path.read_text(), "https://example.test/live")
             self.assertEqual(room_path.read_text(), "123")
 
-    def test_stops_after_bounded_retries_when_stream_options_never_arrive(self):
+    def test_retries_all_attempts_when_stream_options_never_arrive(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch.object(
                 sys,
@@ -106,11 +106,8 @@ class ResolveTests(unittest.TestCase):
                 resolve.main()
 
             self.assertEqual(exit_error.exception.code, 3)
-            # This fixture has no streamData/hevcStreamData keys at all -- the "gated
-            # account" pattern -- so the resolver now fails fast after GATED_ATTEMPTS
-            # checks/sleeps instead of the full STREAM_ATTEMPTS retries.
-            self.assertEqual(get_json.call_count, resolve.GATED_ATTEMPTS)
-            self.assertEqual(sleep.call_count, resolve.GATED_ATTEMPTS - 1)
+            self.assertEqual(get_json.call_count, resolve.STREAM_ATTEMPTS)
+            self.assertEqual(sleep.call_count, resolve.STREAM_ATTEMPTS - 1)
 
 
 if __name__ == "__main__":

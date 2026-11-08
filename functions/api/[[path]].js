@@ -474,6 +474,17 @@ async function addActivity(env, username, message) {
   ).run();
 }
 
+async function logAccountLifecycle(env, username, action, message) {
+  const occurredAt = new Date().toISOString();
+  console.log(JSON.stringify({
+    event: "account_lifecycle",
+    action,
+    username,
+    occurred_at: occurredAt,
+  }));
+  await addActivity(env, username, message);
+}
+
 async function internalStatus(request, env) {
   await internalAuthorized(request, env);
   const body = await readJson(request);
@@ -603,11 +614,16 @@ async function handle(request, env) {
        FROM accounts LEFT JOIN account_status USING (username)
        WHERE accounts.username = ?`,
     ).bind(username).first();
+    const wasActive = existing?.active === 1;
     await env.DB.prepare(
       `INSERT INTO accounts (username, active) VALUES (?, 1)
        ON CONFLICT(username) DO UPDATE SET active = 1`,
     )
       .bind(username).run();
+    if (!wasActive) {
+      await logAccountLifecycle(env, username, existing ? "resumed" : "added",
+        existing ? "Account monitoring resumed" : "Account added; monitoring enabled");
+    }
     await syncTracked(env);
     const checkedAt = existing?.checked_at ? Date.parse(existing.checked_at) : NaN;
     const statusIsStale = !Number.isFinite(checkedAt) || Date.now() - checkedAt >= 5 * 60_000;
@@ -617,9 +633,25 @@ async function handle(request, env) {
         await queueManualMonitor(env, username);
       } catch (error) {
         const detail = error instanceof Error ? error.message : "GitHub API request failed";
+        if (!wasActive) {
+          await logAccountLifecycle(
+            env,
+            username,
+            "status_check_failed",
+            `Account saved; immediate status check could not be queued: ${detail}`,
+          );
+        }
         throw new HttpError(
           error instanceof HttpError ? error.status : 502,
           `Account was saved, but its immediate status check could not be queued: ${detail}`,
+        );
+      }
+      if (!wasActive) {
+        await logAccountLifecycle(
+          env,
+          username,
+          "status_check_queued",
+          "Immediate account status check queued",
         );
       }
     }
@@ -650,6 +682,12 @@ async function handle(request, env) {
     const result = await env.DB.prepare("UPDATE accounts SET active = ? WHERE username = ?")
       .bind(body.active ? 1 : 0, username).run();
     if (!result.meta.changes) throw new HttpError(404, "Account was not found");
+    await logAccountLifecycle(
+      env,
+      username,
+      body.active ? "resumed" : "paused",
+      body.active ? "Account monitoring resumed" : "Account monitoring paused",
+    );
     await syncTracked(env);
     return json({ ok: true });
   }
@@ -661,7 +699,12 @@ async function handle(request, env) {
     if (!result.meta.changes) throw new HttpError(404, "Account was not found");
     await env.DB.prepare("DELETE FROM account_status WHERE username = ?")
       .bind(username).run();
-    await addActivity(env, username, "Account removed; recorder stop requested");
+    await logAccountLifecycle(
+      env,
+      username,
+      "removed",
+      "Account removed; recorder stop requested",
+    );
     await syncTracked(env);
     return json({ ok: true });
   }
