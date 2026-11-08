@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from monitor import (
     check_account,
     check_accounts,
     in_quiet_hours,
+    main,
     parse_accounts,
     parse_live_status,
 )
@@ -80,6 +82,74 @@ class MonitorTests(unittest.TestCase):
 
     def test_check_accounts_handles_no_tracked_accounts(self):
         self.assertEqual(check_accounts([]), {})
+
+    def test_main_dispatches_a_separate_recorder_for_each_live_account(self):
+        dispatched = []
+
+        def request(url, token=None, method="GET", body=None):
+            if method == "POST":
+                dispatched.append(body)
+                return {}
+            return {"workflow_runs": []}
+
+        environment = {
+            "TRACKED": "alice,bob",
+            "GITHUB_TOKEN": "token",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_REF_NAME": "main",
+            "HOST_KEY_SECRET": "secret",
+            "QUIET_HOURS_ENABLED": "false",
+        }
+        with patch.dict(os.environ, environment), patch(
+            "monitor.check_accounts",
+            return_value={"alice": True, "bob": True},
+        ), patch("monitor.request_json", side_effect=request), patch(
+            "monitor.update_dashboard_status"
+        ):
+            main()
+
+        self.assertEqual(len(dispatched), 2)
+        self.assertEqual(
+            {item["inputs"]["host_key"] for item in dispatched},
+            {account_key("alice", "secret"), account_key("bob", "secret")},
+        )
+
+    def test_main_does_not_duplicate_an_active_recorder_for_one_account(self):
+        dispatched = []
+        alice_key = account_key("alice", "secret")
+
+        def request(url, token=None, method="GET", body=None):
+            if method == "POST":
+                dispatched.append(body)
+                return {}
+            return {
+                "workflow_runs": [{
+                    "display_title": f"record-{alice_key}",
+                    "status": "in_progress",
+                }],
+            }
+
+        environment = {
+            "TRACKED": "alice,bob",
+            "GITHUB_TOKEN": "token",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_REF_NAME": "main",
+            "HOST_KEY_SECRET": "secret",
+            "QUIET_HOURS_ENABLED": "false",
+        }
+        with patch.dict(os.environ, environment), patch(
+            "monitor.check_accounts",
+            return_value={"alice": True, "bob": True},
+        ), patch("monitor.request_json", side_effect=request), patch(
+            "monitor.update_dashboard_status"
+        ):
+            main()
+
+        self.assertEqual(len(dispatched), 1)
+        self.assertEqual(
+            dispatched[0]["inputs"]["host_key"],
+            account_key("bob", "secret"),
+        )
 
     def test_check_account_retries_a_transient_request_failure(self):
         with patch(

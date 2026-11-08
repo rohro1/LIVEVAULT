@@ -104,8 +104,12 @@ recording jobs recheck the tracked list and quiet-hours setting while running.
 After the repository variables and secrets are set, enable GitHub Actions. The
 **Live monitor** workflow is scheduled every 5 minutes, GitHub Actions'
 minimum scheduled interval (GitHub may delay scheduled starts); it can also be
-started from **Actions → Live monitor → Run workflow**. The first detected
-live host starts a recorder job. Successful
+started from **Actions → Live monitor → Run workflow**. Each detected live host
+gets its own recorder job; jobs for different hosts can run concurrently, while
+duplicate jobs for the same host are serialized. GitHub may queue jobs when its
+available runner concurrency is exhausted. If TikTok reports a live before
+stream options are available, the resolver retries for up to 50 seconds.
+Successful
 parts are uploaded to the Drive account used for OAuth and deleted from runner
 disk only after Drive confirms the uploaded file ID, name, and size.
 If a TikTok status request fails, that account is shown as unknown/error and
@@ -168,7 +172,9 @@ changes sync the active list back to GitHub.
      `DASHBOARD_API_TOKEN`, `GITHUB_PAT`, `HOST_KEY_SECRET`
    - Variable: `GITHUB_REPOSITORY` = `rohro1/LIVEVAULT`
    - `GITHUB_PAT` must be a fine-grained token limited to this repository with
-     repository **Variables: read and write** permission.
+     repository **Variables: read and write** permission. Add **Actions: read**
+     if the dashboard should display recent workflow runs; that permission is
+     only for diagnostics, not for the monitor or recorder jobs.
    - Use a different strong random value for each dashboard password/session
      secret/ingest token. `HOST_KEY_SECRET` must match the GitHub Actions
      secret of the same name.

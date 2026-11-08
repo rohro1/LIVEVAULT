@@ -231,7 +231,6 @@ function renderDiagnostics(data, events) {
     ["GitHub repository", data.integrations.github_repository],
     ["Dashboard ingest token", data.integrations.dashboard_ingest_token],
     ["Host key secret", data.integrations.host_key_secret],
-    ["Google Drive OAuth", data.integrations.google_drive_credentials],
   ];
   for (const [name, configured] of integrations) {
     diagnosticLine(
@@ -253,18 +252,19 @@ function renderDiagnostics(data, events) {
       data.tracking_sync.status === "not_checked" ? "warn" : "error",
     );
   }
+  const verifiedUploads = data.d1.status === "ok" ? data.d1.recordings : 0;
   diagnosticLine(
     diagnosticLog,
-    `[${timestamp}] Google Drive OAuth credentials are stored in GitHub Actions and cannot be inspected by Cloudflare; a successful recorder run/upload verifies them`,
-    "warn",
+    `[${timestamp}] Google Drive OAuth: stored in GitHub Actions and not inspectable here; ${verifiedUploads} verified upload(s) recorded`,
+    verifiedUploads ? "ok" : "warn",
   );
 
   for (const [name, workflow] of Object.entries(data.workflows)) {
     if (workflow.status !== "ok") {
       diagnosticLine(
         diagnosticLog,
-        `[${timestamp}] ${name} workflow: ${workflow.message || "not checked; GitHub credentials missing"}`,
-        workflow.status === "not_checked" ? "warn" : "error",
+        `[${timestamp}] ${name} workflow status unavailable: ${workflow.message || "GitHub credentials missing"}; grant Actions: read to GITHUB_PAT to inspect runs`,
+        "warn",
       );
       continue;
     }
@@ -302,8 +302,7 @@ function renderDiagnostics(data, events) {
   const failed = data.d1.status !== "ok" ||
     Object.values(data.integrations).some((configured) => configured === false) ||
     data.tracking_sync.status === "mismatch" ||
-    data.tracking_sync.status === "error" ||
-    Object.values(data.workflows).some((workflow) => workflow.status === "error");
+    data.tracking_sync.status === "error";
   diagnosticConnection.textContent = failed ? "Issues detected" : "Connected";
   diagnosticConnection.className = `diagnostic-state ${failed ? "error" : "online"}`;
 }
