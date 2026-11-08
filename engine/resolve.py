@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -10,17 +11,51 @@ from tiktok import parse_live_status, request_headers, status_url, stream_candid
 RANK = {"origin": 0, "uhd_60": 1, "uhd": 1, "hd_60": 2, "hd": 2, "sd": 3, "ld": 4, "md": 5}
 STREAM_ATTEMPTS = 6
 STREAM_RETRY_SECONDS = 10
+GATED_ATTEMPTS = 2  # fail fast when TikTok sends no stream-data keys at all
 
 def get_json(username):
     req = urllib.request.Request(status_url(username), headers=request_headers(username))
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
+def _flags(obj):
+    """Numeric/boolean values only, skipping anything that looks like an ID."""
+    out = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            k = str(k)
+            if isinstance(v, (bool, int)) and not re.search(r"(?:^|_)id$|Id$|ID$", k):
+                out[k] = v
+    return out
+
+def _dict(value):
+    return value if isinstance(value, dict) else {}
+
+def describe_response(d):
+    """Safe summary of a TikTok status response: key names and numeric/boolean flags only.
+    Never includes URLs, IDs, or text values."""
+    if not isinstance(d, dict):
+        return {"type": type(d).__name__}
+    data = _dict(d.get("data"))
+    user = _dict(data.get("user"))
+    room = _dict(data.get("liveRoom"))
+    return {
+        "top_keys": sorted(str(k) for k in d),
+        "top_flags": _flags(d),
+        "data_keys": sorted(str(k) for k in data),
+        "user_keys": sorted(str(k) for k in user),
+        "user_flags": _flags(user),
+        "room_present": bool(room),
+        "room_keys": sorted(str(k) for k in room),
+        "room_flags": _flags(room),
+    }
+
 def main():
     user, outfile = sys.argv[1].lstrip("@"), sys.argv[2]
     roomfile = sys.argv[3] if len(sys.argv) > 3 else None
     mode = os.environ.get("QUALITY", "compat")
     pool = []
+    gated_attempts = 0
     last_error = "TikTok reported a live room but returned no usable stream URL data"
     for attempt in range(1, STREAM_ATTEMPTS + 1):
         try:
@@ -46,7 +81,23 @@ def main():
                 pool = cands
             if pool:
                 break
-            last_error = "TikTok reports this account is live but returned no stream URL data"
+            room = data.get("liveRoom") or {}
+            if "streamData" not in room and "hevcStreamData" not in room:
+                gated_attempts += 1
+                last_error = (
+                    "TikTok lists this account as live but provided no stream data; "
+                    "this usually means the live requires a logged-in session to view, "
+                    "or has not actually started broadcasting"
+                )
+                if gated_attempts >= GATED_ATTEMPTS:
+                    print("RESULT: empty-stream diagnostics: " +
+                          json.dumps(describe_response(d), sort_keys=True))
+                    break
+            else:
+                if attempt in (1, STREAM_ATTEMPTS):
+                    print("RESULT: empty-stream diagnostics: " +
+                          json.dumps(describe_response(d), sort_keys=True))
+                last_error = "TikTok reports this account is live but returned no stream URL data"
         except urllib.error.HTTPError as exc:
             last_error = f"TikTok stream request returned HTTP {exc.code}"
         except urllib.error.URLError as exc:

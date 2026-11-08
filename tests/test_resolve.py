@@ -106,8 +106,11 @@ class ResolveTests(unittest.TestCase):
                 resolve.main()
 
             self.assertEqual(exit_error.exception.code, 3)
-            self.assertEqual(get_json.call_count, resolve.STREAM_ATTEMPTS)
-            self.assertEqual(sleep.call_count, resolve.STREAM_ATTEMPTS - 1)
+            # This fixture has no streamData/hevcStreamData keys at all -- the "gated
+            # account" pattern -- so the resolver now fails fast after GATED_ATTEMPTS
+            # checks/sleeps instead of the full STREAM_ATTEMPTS retries.
+            self.assertEqual(get_json.call_count, resolve.GATED_ATTEMPTS)
+            self.assertEqual(sleep.call_count, resolve.GATED_ATTEMPTS - 1)
 
 
 if __name__ == "__main__":
