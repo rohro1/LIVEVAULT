@@ -7,10 +7,13 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 
 from record import (
+    APIError,
     api_request,
     capture_has_data,
+    drive_upload,
     ffmpeg_error_summary,
     resolve_stream,
+    run_capture,
     save_failure_reason,
     upload_segments,
 )
@@ -48,7 +51,7 @@ class RecorderTests(unittest.TestCase):
 
             def convert_segment(command, **_kwargs):
                 Path(command[-1]).write_bytes(b"mp4 data")
-                return Mock(returncode=0)
+                return Mock(returncode=1)
 
             verified = {
                 "id": "drive-id",
@@ -77,6 +80,107 @@ class RecorderTests(unittest.TestCase):
                 verified,
             ),
         )
+
+    def test_drive_chunk_retries_a_transient_gateway_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "part.mp4"
+            path.write_bytes(b"recording data")
+            responses = [
+                (200, {"Location": "https://upload.example/session"}, b""),
+                APIError(502),
+                (308, {}, b""),
+                (200, {}, b'{"id":"drive-id"}'),
+                (200, {}, (
+                    b'{"id":"drive-id","name":"part.mp4","size":"14",'
+                    b'"webViewLink":"https://drive.google.com/file/d/drive-id/view",'
+                    b'"trashed":false}'
+                )),
+            ]
+            with patch("record.refresh_token", return_value="access-token"), patch(
+                "record.api_request", side_effect=responses
+            ) as request, patch("record.time.sleep"):
+                verified = drive_upload(path, "part.mp4")
+
+        self.assertEqual(verified["id"], "drive-id")
+        self.assertEqual(request.call_count, 5)
+
+    def test_upload_segments_attempts_later_parts_after_one_upload_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            first = directory / "part_001.ts"
+            second = directory / "part_002.ts"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            upload_results = [
+                RuntimeError("Google Drive upload returned HTTP 502"),
+                {
+                    "id": "drive-id",
+                    "size": "8",
+                    "webViewLink": "https://drive.google.com/file/d/drive-id/view",
+                },
+            ]
+
+            def convert_segment(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"mp4 data")
+                return Mock(returncode=0)
+
+            with patch("record.subprocess.run", side_effect=convert_segment), patch(
+                "record.probe_duration", return_value=30
+            ), patch("record.drive_upload", side_effect=upload_results) as drive_upload, patch(
+                "record.notify_dashboard"
+            ), self.assertRaisesRegex(RuntimeError, "part 001.*HTTP 502"):
+                upload_segments(directory, "alice", "room", "20261108_120000", 1, True)
+            first_exists = first.exists()
+            second_exists = second.exists()
+
+        self.assertEqual(drive_upload.call_count, 2)
+        self.assertTrue(first_exists)
+        self.assertFalse(second_exists)
+
+    def test_drive_upload_error_finalizes_and_retries_captured_segments(self):
+        class FakeProcess:
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def send_signal(self, _signal):
+                self.returncode = 0
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        process = FakeProcess()
+        with patch("record.subprocess.Popen", return_value=process), patch(
+            "record.time.monotonic", return_value=100
+        ), patch("record.capture_has_data", return_value=True), patch(
+            "record.notify_dashboard_status"
+        ), patch(
+            "record.refresh_tracked_user", return_value="alice"
+        ), patch(
+            "record.upload_segments",
+            side_effect=[RuntimeError("Google Drive upload chunk failed (HTTP 502)"), 2],
+        ) as upload_segments, self.assertRaisesRegex(
+            RuntimeError, "Google Drive upload chunk failed \\(HTTP 502\\)"
+        ):
+            run_capture(
+                "https://example.test/stream",
+                "room",
+                "alice",
+                "20261108_120000",
+                30,
+                1,
+                1000,
+                "host-key",
+                "owner/repo",
+                "token",
+                "secret",
+            )
+
+        self.assertEqual(upload_segments.call_count, 2)
+        self.assertFalse(upload_segments.call_args_list[0].kwargs["finalized"])
+        self.assertTrue(upload_segments.call_args.kwargs["finalized"])
+        self.assertEqual(process.returncode, 0)
 
     def test_ffmpeg_error_summary_redacts_source_urls(self):
         with tempfile.TemporaryDirectory() as temp_dir:

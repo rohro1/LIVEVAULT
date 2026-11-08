@@ -31,6 +31,12 @@ class NetworkError(RuntimeError):
     pass
 
 
+class APIError(RuntimeError):
+    def __init__(self, status_code):
+        super().__init__(f"Remote API request failed (HTTP {status_code})")
+        self.status_code = status_code
+
+
 def api_request(url, method="GET", headers=None, body=None, timeout=60):
     request_headers = {"User-Agent": "LIVEVAULT/1.0"}
     request_headers.update(headers or {})
@@ -41,7 +47,7 @@ def api_request(url, method="GET", headers=None, body=None, timeout=60):
     except urllib.error.HTTPError as exc:
         if exc.code == 308:
             return exc.code, exc.headers, exc.read()
-        raise RuntimeError(f"Remote API request failed (HTTP {exc.code})") from None
+        raise APIError(exc.code) from None
     except urllib.error.URLError as exc:
         raise NetworkError(f"Network request failed ({exc.reason.__class__.__name__})") from None
     except TimeoutError:
@@ -192,18 +198,34 @@ def drive_upload(path, filename):
                     )
                     response_received = True
                     break
-                except NetworkError:
-                    if attempt == 4:
+                except (NetworkError, APIError) as exc:
+                    if isinstance(exc, APIError) and exc.status_code not in {
+                        408, 429, 500, 502, 503, 504,
+                    }:
                         raise
-                    reported_offset, completed = _upload_state(
-                        session_url, access_token, total
-                    )
+                    if attempt == 4:
+                        raise RuntimeError(
+                            "Google Drive upload chunk failed after 5 attempts: "
+                            f"{exc}"
+                        ) from exc
+                    try:
+                        reported_offset, completed = _upload_state(
+                            session_url, access_token, total
+                        )
+                    except (NetworkError, APIError) as state_error:
+                        if isinstance(state_error, APIError) and state_error.status_code not in {
+                            408, 429, 500, 502, 503, 504,
+                        }:
+                            raise
+                        time.sleep(min(2 ** attempt, 8))
+                        continue
                     if completed:
                         upload_result = completed
                         break
                     if reported_offset != offset:
                         offset = reported_offset
                         break
+                    time.sleep(min(2 ** attempt, 8))
             if upload_result:
                 break
             if not response_received:
@@ -385,30 +407,40 @@ def upload_segments(directory, username, room_id, stamp, next_part, finalized):
     )
     if not finalized and segments:
         segments = segments[:-1]
+    failures = []
     for segment in segments:
         part = int(pattern.fullmatch(segment.name).group(1))
         mp4 = segment.with_suffix(".mp4")
-        result = subprocess.run(
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-                "-i", str(segment), "-c", "copy", "-movflags", "+faststart", str(mp4),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+                    "-i", str(segment), "-c", "copy", "-movflags", "+faststart", str(mp4),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if not mp4.is_file():
+                raise RuntimeError(f"Could not convert recording part {part} to MP4")
+            duration_seconds = probe_duration(mp4)
+            if result.returncode != 0:
+                print(f"RESULT: salvaging playable partial MP4 for part {part:03d}")
+            filename = f"{username}_{room_id}_{stamp}_part{part:03d}.mp4"
+            verified = drive_upload(mp4, filename)
+            notify_dashboard(
+                username, room_id, stamp, part, filename, duration_seconds, verified
+            )
+            mp4.unlink()
+            segment.unlink()
+            print(f"RESULT: part {part:03d} uploaded and verified in Google Drive")
+            next_part = max(next_part, part + 1)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+            failures.append(f"part {part:03d}: {exc}")
+    if failures:
+        raise RuntimeError(
+            "One or more recording parts could not be uploaded: " + "; ".join(failures)
         )
-        if result.returncode != 0 or not mp4.is_file():
-            raise RuntimeError(f"Could not convert recording part {part} to MP4")
-        duration_seconds = probe_duration(mp4)
-        filename = f"{username}_{room_id}_{stamp}_part{part:03d}.mp4"
-        verified = drive_upload(mp4, filename)
-        notify_dashboard(
-            username, room_id, stamp, part, filename, duration_seconds, verified
-        )
-        mp4.unlink()
-        segment.unlink()
-        print(f"RESULT: part {part:03d} uploaded and verified in Google Drive")
-        next_part = max(next_part, part + 1)
     return next_part
 
 
@@ -435,6 +467,7 @@ def run_capture(
         started_wait_deadline = time.monotonic() + 60
         with (directory / "ffmpeg.log").open("w") as log:
             process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=log)
+            capture_error = None
             try:
                 while process.poll() is None:
                     now = time.monotonic()
@@ -470,6 +503,8 @@ def run_capture(
                         directory, username, room_id, stamp, next_part, finalized=False
                     )
                     time.sleep(20)
+            except Exception as exc:
+                capture_error = exc
             finally:
                 if process.poll() is None:
                     process.send_signal(signal.SIGINT)
@@ -478,9 +513,19 @@ def run_capture(
                     except subprocess.TimeoutExpired:
                         process.terminate()
                         process.wait(timeout=10)
-            next_part = upload_segments(
-                directory, username, room_id, stamp, next_part, finalized=True
-            )
+            try:
+                next_part = upload_segments(
+                    directory, username, room_id, stamp, next_part, finalized=True
+                )
+            except Exception as upload_error:
+                if capture_error:
+                    raise RuntimeError(
+                        f"Capture failed ({capture_error}); final part upload also failed "
+                        f"({upload_error})"
+                    ) from capture_error
+                raise
+            if capture_error:
+                raise capture_error
         if process.returncode not in {0, 255}:
             if not capture_started:
                 raise RuntimeError(
