@@ -541,11 +541,20 @@ async function handle(request, env) {
   }
   if (path === "/api/internal/recordings/missing-duration" && request.method === "GET") {
     await internalAuthorized(request, env);
-    const rows = await env.DB.prepare(
-      `SELECT drive_id, username, filename
-       FROM recordings WHERE duration_seconds <= 0
-       ORDER BY created_at ASC LIMIT 200`,
-    ).all();
+    const after = new URL(request.url).searchParams.get("after");
+    const rows = after
+      ? await env.DB.prepare(
+        `SELECT drive_id, username, filename
+         FROM recordings
+         WHERE (duration_seconds IS NULL OR duration_seconds <= 0) AND drive_id > ?
+         ORDER BY drive_id ASC LIMIT 200`,
+      ).bind(after).all()
+      : await env.DB.prepare(
+        `SELECT drive_id, username, filename
+         FROM recordings
+         WHERE duration_seconds IS NULL OR duration_seconds <= 0
+         ORDER BY drive_id ASC LIMIT 200`,
+      ).all();
     return json({ recordings: rows.results || [] });
   }
   if (path.startsWith("/api/internal/recordings/") && request.method === "PATCH") {
@@ -557,7 +566,7 @@ async function handle(request, env) {
       throw new HttpError(400, "Recording duration update is invalid");
     }
     const result = await env.DB.prepare(
-      "UPDATE recordings SET duration_seconds = ? WHERE drive_id = ? AND duration_seconds <= 0",
+      "UPDATE recordings SET duration_seconds = ? WHERE drive_id = ? AND (duration_seconds IS NULL OR duration_seconds <= 0)",
     ).bind(body.duration_seconds, driveId).run();
     if (!result.meta.changes) return json({ ok: true, skipped: true }, 202);
     return json({ ok: true });
@@ -714,10 +723,13 @@ async function handle(request, env) {
        ORDER BY started_at DESC, username ASC, part_number ASC, created_at ASC
        LIMIT 200`,
     ).all();
+    const missingDurations = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM recordings WHERE duration_seconds IS NULL OR duration_seconds <= 0",
+    ).first();
     const recordings = rows.results || [];
     return json({
       recordings,
-      missing_durations: recordings.filter((recording) => recording.duration_seconds <= 0).length,
+      missing_durations: Number(missingDurations?.count || 0),
     });
   }
   if (path === "/api/recordings/backfill-duration" && request.method === "POST") {

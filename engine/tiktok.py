@@ -1,5 +1,12 @@
 import json
+from dataclasses import dataclass
 from urllib.parse import quote
+
+
+@dataclass(frozen=True)
+class LiveStatus:
+    online: bool | None
+    record_candidate: bool
 
 
 USER_AGENT = (
@@ -59,7 +66,7 @@ def stream_candidates(room):
     return out, seen_keys
 
 
-def parse_live_status(payload):
+def inspect_live_status(payload):
     if not isinstance(payload, dict):
         raise ValueError("TikTok status response has an invalid format")
     data = payload.get("data")
@@ -69,12 +76,26 @@ def parse_live_status(payload):
 
     status = user["status"]
     if status == 2:
-        return True
+        room = data.get("liveRoom")
+        if not isinstance(room, dict) or room.get("status") not in {2, 3}:
+            return LiveStatus(None, True)
+        candidates, _ = stream_candidates(room)
+        if user.get("roomId") and candidates:
+            return LiveStatus(True, True)
+        return LiveStatus(None, True)
+    if status == 4:
+        return LiveStatus(False, False)
     if status != 3 or not isinstance(data, dict):
-        return False
+        return LiveStatus(None, False)
 
     room = data.get("liveRoom")
     if not isinstance(room, dict) or room.get("status") not in {2, 3}:
-        return False
+        return LiveStatus(None, False)
     candidates, _ = stream_candidates(room)
-    return bool(user.get("roomId") and candidates)
+    if user.get("roomId") and candidates:
+        return LiveStatus(True, True)
+    return LiveStatus(None, bool(user.get("roomId")))
+
+
+def parse_live_status(payload):
+    return inspect_live_status(payload).online

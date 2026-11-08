@@ -13,7 +13,7 @@ import resolve
 
 
 def live_response(stream_data=None):
-    live_room = {}
+    live_room = {"status": 2}
     if stream_data is not None:
         live_room["streamData"] = {
             "pull_data": {"stream_data": json.dumps(stream_data)},

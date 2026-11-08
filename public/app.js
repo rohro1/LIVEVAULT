@@ -62,7 +62,7 @@ function formatBytes(bytes) {
 }
 
 function formatDuration(seconds) {
-  if (!Number.isFinite(seconds) || seconds <= 0) return "—";
+  if (!Number.isFinite(seconds) || seconds <= 0) return "Unavailable";
   const totalSeconds = Math.round(seconds);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -98,12 +98,23 @@ function renderAccounts(accounts) {
       : !hasChecked
         ? "Not checked"
         : stale
-          ? "Unknown (stale)"
+          ? "Not verified (stale)"
           : account.online === true
             ? "Online"
             : account.online === false
               ? "Offline"
-              : "Unknown";
+              : "Not verified";
+    online.title = !account.active
+      ? "Monitoring is paused for this account."
+      : !hasChecked
+        ? "No status check has completed yet."
+        : stale
+          ? "The last status check is older than seven minutes; wait for or request a fresh check."
+          : account.online === null
+            ? "TikTok did not provide enough reliable data to confirm Online or Offline."
+            : account.online
+              ? "TikTok returned a usable live stream, confirming this account is Online."
+              : "TikTok returned an explicit offline status.";
     const recording = document.createElement("span");
     recording.className = `status-pill ${account.recorder_status === "recording" ? "recording" : ""}`;
     recording.textContent = account.recorder_status === "recording"
@@ -183,13 +194,9 @@ function renderActivity(events) {
   }
 }
 
-function renderRecordings(recordings) {
+function renderRecordings(recordings, missingDurationCount) {
   recordingsBody.replaceChildren();
-  let missingDurations = 0;
   for (const recording of recordings) {
-    if (!Number.isFinite(recording.duration_seconds) || recording.duration_seconds <= 0) {
-      missingDurations += 1;
-    }
     const row = document.createElement("tr");
     const started = recording.started_at;
     const formatted = started.length === 15
@@ -215,6 +222,9 @@ function renderRecordings(recordings) {
     row.append(linkCell);
     const durationCell = document.createElement("td");
     durationCell.textContent = formatDuration(recording.duration_seconds);
+    if (durationCell.textContent === "Unavailable") {
+      durationCell.title = "Use Fetch missing durations to recover it from Google Drive.";
+    }
     row.append(durationCell);
     const actionsCell = document.createElement("td");
     const remove = document.createElement("button");
@@ -228,9 +238,10 @@ function renderRecordings(recordings) {
     row.append(actionsCell);
     recordingsBody.append(row);
   }
-  backfillDurationsButton.classList.toggle("hidden", missingDurations === 0);
-  backfillDurationsButton.disabled = missingDurations === 0;
-  backfillDurationsButton.textContent = `Fetch ${missingDurations} missing duration(s)`;
+  backfillDurationsButton.classList.toggle("hidden", missingDurationCount === 0);
+  backfillDurationsButton.disabled = missingDurationCount === 0;
+  backfillDurationsButton.textContent =
+    `Fetch ${missingDurationCount} missing duration(s)`;
 }
 
 function diagnosticLine(container, message, state = "ok", url = "") {
@@ -456,7 +467,7 @@ async function loadDashboard(quiet = false) {
       : Promise.resolve(cachedDiagnostics),
   ]);
   renderAccounts(accounts.accounts);
-  renderRecordings(recordings.recordings);
+  renderRecordings(recordings.recordings, recordings.missing_durations);
   renderActivity(activity.events);
   cachedDiagnostics = diagnostics;
   if (shouldRefreshDiagnostics) diagnosticsFetchedAt = Date.now();
@@ -564,7 +575,9 @@ backfillDurationsButton.addEventListener("click", async () => {
   backfillDurationsButton.disabled = true;
   try {
     await api("/api/recordings/backfill-duration", { method: "POST", body: "{}" });
-    showNotice("Duration lookup queued. Existing recordings will update as Drive metadata is checked.");
+    showNotice(
+      "Duration lookup queued. Drive metadata and, if needed, the video itself will be checked; the table refreshes automatically.",
+    );
   } catch (error) {
     showNotice(error.message, true);
   } finally {

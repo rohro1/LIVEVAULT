@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.request
 
-from tiktok import parse_live_status, request_headers, status_url, stream_candidates
+from tiktok import inspect_live_status, request_headers, status_url, stream_candidates
 
 RANK = {"origin": 0, "uhd_60": 1, "uhd": 1, "hd_60": 2, "hd": 2, "sd": 3, "ld": 4, "md": 5}
 STREAM_ATTEMPTS = 6
@@ -67,10 +67,28 @@ def main():
             data = d.get("data") or {}
             user_data = data.get("user") or {}
             status = user_data.get("status")
-            if not parse_live_status(d):
+            live_status = inspect_live_status(d)
+            if live_status.online is False:
                 print(f"RESULT: user status={status}; no active stream detected")
                 print("RESULT: not live, nothing to record")
                 sys.exit(2)
+            if live_status.online is None:
+                print(
+                    f"RESULT: user status={status}; TikTok did not provide "
+                    "enough information to verify the account as online or offline"
+                )
+                print("RESULT: empty-stream diagnostics: " +
+                      json.dumps(describe_response(d), sort_keys=True))
+                last_error = (
+                    "TikTok status is inconclusive and contains no usable stream URL"
+                )
+                if attempt < STREAM_ATTEMPTS:
+                    print(
+                        f"RESULT: {last_error}; retrying "
+                        f"({attempt}/{STREAM_ATTEMPTS - 1}) in {STREAM_RETRY_SECONDS} seconds"
+                    )
+                    time.sleep(STREAM_RETRY_SECONDS)
+                continue
             print(f"RESULT: active stream detected (user status={status})")
             if roomfile:
                 with open(roomfile, "w") as f:

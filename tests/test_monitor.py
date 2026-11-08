@@ -10,16 +10,17 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 
 from monitor import (
+    LiveStatus,
     account_key,
     check_account,
     check_accounts,
     in_quiet_hours,
     main,
     parse_accounts,
-    parse_live_status,
     recorder_retry_delay,
 )
 from record import refresh_tracked_user, tracked_user
+from tiktok import inspect_live_status, parse_live_status
 
 
 class MonitorTests(unittest.TestCase):
@@ -31,8 +32,30 @@ class MonitorTests(unittest.TestCase):
             parse_accounts("valid,has space")
 
     def test_parse_live_status_detects_live_and_offline_accounts(self):
-        self.assertTrue(parse_live_status({"data": {"user": {"status": 2}}}))
+        possible_live = {"data": {"user": {"status": 2}}}
+        self.assertIsNone(parse_live_status(possible_live))
+        self.assertEqual(inspect_live_status(possible_live), LiveStatus(None, True))
         self.assertFalse(parse_live_status({"data": {"user": {"status": 4}}}))
+
+    def test_parse_live_status_only_verifies_online_when_stream_data_is_usable(self):
+        response = {
+            "data": {
+                "user": {"status": 2, "roomId": "123"},
+                "liveRoom": {
+                    "status": 2,
+                    "streamData": {
+                        "pull_data": {
+                            "stream_data": json.dumps({
+                                "data": {"origin": {"main": {
+                                    "flv": "https://example.test/stream",
+                                }}},
+                            }),
+                        },
+                    },
+                },
+            },
+        }
+        self.assertTrue(parse_live_status(response))
 
     def test_parse_live_status_accepts_status_three_with_active_stream_data(self):
         stream_data = {
@@ -55,14 +78,14 @@ class MonitorTests(unittest.TestCase):
         }
         self.assertTrue(parse_live_status(response))
 
-    def test_parse_live_status_rejects_status_three_without_active_stream_data(self):
+    def test_parse_live_status_does_not_report_offline_without_confirmation(self):
         response = {
             "data": {
                 "user": {"status": 3, "roomId": "123"},
                 "liveRoom": {"status": 3, "streamData": {}},
             },
         }
-        self.assertFalse(parse_live_status(response))
+        self.assertIsNone(parse_live_status(response))
 
     def test_parse_live_status_rejects_unrecognized_responses(self):
         for response in ({}, {"data": {"user": {}}}, {"data": []}):
@@ -114,6 +137,37 @@ class MonitorTests(unittest.TestCase):
             {item["inputs"]["host_key"] for item in dispatched},
             {account_key("alice", "secret"), account_key("bob", "secret")},
         )
+
+    def test_main_queues_possible_live_but_does_not_report_it_as_verified_online(self):
+        dispatched = []
+        status_updates = []
+
+        def request(url, token=None, method="GET", body=None):
+            if method == "POST":
+                dispatched.append(body)
+                return {}
+            return {"workflow_runs": []}
+
+        environment = {
+            "TRACKED": "alice",
+            "GITHUB_TOKEN": "token",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_REF_NAME": "main",
+            "HOST_KEY_SECRET": "secret",
+            "QUIET_HOURS_ENABLED": "false",
+        }
+        with patch.dict(os.environ, environment), patch(
+            "monitor.check_accounts",
+            return_value={"alice": LiveStatus(None, True)},
+        ), patch("monitor.request_json", side_effect=request), patch(
+            "monitor.update_dashboard_status",
+            side_effect=lambda *args: status_updates.append(args) or True,
+        ):
+            main()
+
+        self.assertEqual(len(dispatched), 1)
+        self.assertIsNone(status_updates[-1][1])
+        self.assertIn("verify the stream", status_updates[-1][3])
 
     def test_main_can_check_only_a_requested_tracked_account(self):
         checked = []

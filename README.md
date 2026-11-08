@@ -122,9 +122,12 @@ Recording parts target 30 minutes by default. A part can be shorter if the live
 ends or the stream disconnects; the dashboard displays each uploaded video's
 measured duration so interruptions are visible. Parts are grouped by newest
 recording session with their part numbers in ascending order.
-If a recorder status check fails, that account's prior Online/Offline result is
-cleared; account results older than seven minutes are shown as unknown/stale.
-Other tracked accounts are still checked.
+The dashboard reports Online only when TikTok returns a usable live stream,
+and Offline only when TikTok returns an explicit offline status. A possible-live
+signal without stream data remains **Not verified** while the recorder checks
+for a stream; failed checks do not preserve a stale Online/Offline result.
+Results older than seven minutes are marked stale. Other tracked accounts are
+still checked.
 The recorder is shown as active only
 after FFmpeg produces stream data; startup failures are reported with sanitized
 diagnostics. Failed recorder jobs are marked as errors in the dashboard when
@@ -150,7 +153,9 @@ token there if dashboard diagnostics report HTTP 401.
 
 The recordings table can queue permanent Drive deletion after confirmation.
 **Fetch missing durations** uses Google Drive video metadata to backfill older
-rows; videos without processed duration metadata remain marked unavailable.
+rows and probes the video with FFmpeg when Drive has not published a duration.
+The recordings refresh updates the table as durations are saved; videos that
+cannot be downloaded or probed remain marked unavailable.
 These operations run through the `Manage Drive recordings` GitHub Actions
 workflow so Google OAuth credentials stay in Actions, not Cloudflare Pages.
 

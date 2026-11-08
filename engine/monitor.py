@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from zoneinfo import ZoneInfo
 
-from tiktok import parse_live_status, request_headers, status_url
+from tiktok import LiveStatus, inspect_live_status, request_headers, status_url
 
 API = "https://api.github.com"
 USER_AGENT = "LIVEVAULT/1.0"
@@ -128,7 +128,7 @@ def is_live(username):
     except TimeoutError:
         raise RuntimeError("TikTok status request timed out") from None
     try:
-        return parse_live_status(data)
+        return inspect_live_status(data)
     except ValueError as exc:
         raise RuntimeError(str(exc)) from None
 
@@ -244,45 +244,51 @@ def main():
     live_results = check_accounts(accounts)
     for username in accounts:
         key = account_key(username, secret)
-        online = live_results[username]
-        if isinstance(online, Exception):
+        result = live_results[username]
+        if isinstance(result, Exception):
             check_failures += 1
             checked_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
             print(
                 f"EVENT: monitor_account_status at={checked_at} "
-                f"username=@{username} result=error reason={online}"
+                f"username=@{username} result=error reason={result}"
             )
-            print(f"WARNING: live status check failed for a tracked account: {online}")
+            print(f"WARNING: live status check failed for a tracked account: {result}")
             if not update_dashboard_status(
-                username, None, "error", f"Live status check failed: {online}"
+                username, None, "error", f"Live status check failed: {result}"
             ):
                 dashboard_failures += 1
             continue
+        status = result if isinstance(result, LiveStatus) else LiveStatus(result, bool(result))
+        online = status.online
+        candidate = status.record_candidate
         checked_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        status_label = "online" if online is True else "offline" if online is False else "unverified"
         print(
             f"EVENT: monitor_account_status at={checked_at} "
-            f"username=@{username} result={'online' if online else 'offline'}"
+            f"username=@{username} result={status_label}"
         )
-        if online:
+        if online is True:
             live_count += 1
         if key in active:
             if active[key] == "in_progress":
                 continue
             state = "queued"
             message = (
-                "Live; recorder is queued" if online
+                "Online verified; recorder is queued" if online is True
+                else "TikTok reports a possible live; recorder is queued to verify the stream"
+                if candidate
                 else "Offline; queued recorder is checking the stream"
             )
-        elif online and not quiet_hours:
+        elif candidate and not quiet_hours:
             retry_delay = recorder_retry_delay(runs, key)
             if retry_delay:
                 minutes = max(1, (retry_delay + 59) // 60)
                 state = "error"
                 message = (
-                    "Live detected; recorder retry delayed after a recent failure "
+                    "Possible live detected; recorder retry delayed after a recent failure "
                     f"(retry in about {minutes} minute(s))"
                 )
-                if not update_dashboard_status(username, True, state, message):
+                if not update_dashboard_status(username, online, state, message):
                     dashboard_failures += 1
                 continue
             try:
@@ -304,20 +310,29 @@ def main():
                 dispatch_failures += 1
                 print(f"WARNING: recorder dispatch failed for a tracked account: {exc}")
                 if not update_dashboard_status(
-                    username, True, "error", f"Recorder dispatch failed: {exc}"
+                    username, online, "error", f"Recorder dispatch failed: {exc}"
                 ):
                     dashboard_failures += 1
                 continue
             else:
                 state = "queued"
-                message = "Live detected; recorder queued"
+                message = (
+                    "Online verified; recorder queued" if online is True
+                    else "TikTok reports a possible live; recorder queued to verify the stream"
+                )
                 dispatched += 1
         else:
             state = "idle"
-            message = (
-                "Live detected; quiet hours are active" if online
-                else "Account is offline"
-            )
+            if candidate and quiet_hours:
+                message = (
+                    "Possible live detected; quiet hours are active, so recording was not queued"
+                )
+            elif online is False:
+                message = "Account is offline"
+            elif online is True:
+                message = "Account is online; no recorder was started"
+            else:
+                message = "TikTok response was inconclusive; account status is unverified"
         if not update_dashboard_status(username, online, state, message):
             dashboard_failures += 1
     if quiet_hours:

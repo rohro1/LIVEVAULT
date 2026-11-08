@@ -27,6 +27,9 @@ jobs:
       DASHBOARD_API_TOKEN: ${{ secrets.DASHBOARD_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install FFmpeg for videos without Drive duration metadata
+        if: inputs.action == 'backfill-durations'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
       - name: Run Drive operation
         env:
           ACTION: ${{ inputs.action }}

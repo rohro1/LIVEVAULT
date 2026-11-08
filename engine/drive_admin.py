@@ -1,8 +1,13 @@
 import json
+import math
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import urllib.parse
+import urllib.error
+import urllib.request
 
 from record import APIError, DRIVE_API, api_request, refresh_token
 
@@ -42,43 +47,122 @@ def drive_file(file_id, token):
     return json.loads(raw)
 
 
-def backfill_durations(token):
-    recordings = dashboard_request("/api/internal/recordings/missing-duration").get(
-        "recordings", []
+def probe_drive_duration(file_id, token):
+    query = urllib.parse.urlencode({
+        "alt": "media",
+        "supportsAllDrives": "true",
+    })
+    url = f"{DRIVE_API}/files/{urllib.parse.quote(file_id, safe='')}?{query}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "LIVEVAULT/1.0",
+        },
     )
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as video:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                while chunk := response.read(1024 * 1024):
+                    video.write(chunk)
+            video.flush()
+            try:
+                result = subprocess.run(
+                    [
+                        "ffprobe",
+                        "-v", "error",
+                        "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1",
+                        video.name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+            except FileNotFoundError:
+                raise RuntimeError("ffprobe is not installed") from None
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("Google Drive video duration probe timed out") from None
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Google Drive video download failed (HTTP {exc.code})") from None
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Google Drive video download failed ({exc.reason.__class__.__name__})"
+        ) from None
+    if result.returncode:
+        raise RuntimeError("ffprobe could not read the Google Drive video")
+    try:
+        duration_seconds = float(result.stdout.strip())
+    except ValueError:
+        raise RuntimeError("ffprobe returned an invalid video duration") from None
+    if not math.isfinite(duration_seconds) or duration_seconds <= 0:
+        raise RuntimeError("ffprobe returned an invalid video duration")
+    return duration_seconds
+
+
+def backfill_durations(token):
     updated = 0
     unavailable = 0
-    for recording in recordings:
-        try:
-            metadata = drive_file(recording["drive_id"], token)
-            duration_ms = int(
-                metadata.get("videoMediaMetadata", {}).get("durationMillis", 0)
-            )
-            if (
-                metadata.get("id") != recording["drive_id"]
-                or metadata.get("name") != recording["filename"]
-                or metadata.get("trashed", False)
-                or duration_ms <= 0
-            ):
-                unavailable += 1
-                print(
-                    f"WARNING: duration metadata unavailable for "
-                    f"{recording['filename']}"
+    checked = 0
+    after = None
+    while True:
+        path = "/api/internal/recordings/missing-duration"
+        if after:
+            path += "?" + urllib.parse.urlencode({"after": after})
+        recordings = dashboard_request(path).get("recordings", [])
+        if not recordings:
+            break
+        checked += len(recordings)
+        for recording in recordings:
+            try:
+                metadata = drive_file(recording["drive_id"], token)
+                if (
+                    metadata.get("id") != recording["drive_id"]
+                    or metadata.get("name") != recording["filename"]
+                    or metadata.get("trashed", False)
+                ):
+                    unavailable += 1
+                    print(
+                        f"WARNING: Drive file did not match the dashboard recording: "
+                        f"{recording['filename']}"
+                    )
+                    continue
+                try:
+                    duration_ms = int(
+                        metadata.get("videoMediaMetadata", {}).get("durationMillis", 0)
+                    )
+                except (TypeError, ValueError):
+                    duration_ms = 0
+                duration_seconds = (
+                    duration_ms / 1000
+                    if duration_ms > 0
+                    else probe_drive_duration(recording["drive_id"], token)
                 )
-                continue
-            dashboard_request(
-                "/api/internal/recordings/"
-                + urllib.parse.quote(recording["drive_id"], safe=""),
-                method="PATCH",
-                body={"duration_seconds": duration_ms / 1000},
-            )
-            updated += 1
-        except (APIError, KeyError, TypeError, ValueError, RuntimeError) as exc:
-            unavailable += 1
-            print(f"WARNING: could not fetch duration for a recording ({exc})")
+                dashboard_request(
+                    "/api/internal/recordings/"
+                    + urllib.parse.quote(recording["drive_id"], safe=""),
+                    method="PATCH",
+                    body={"duration_seconds": duration_seconds},
+                )
+                updated += 1
+            except (
+                APIError,
+                KeyError,
+                OSError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                subprocess.SubprocessError,
+            ) as exc:
+                unavailable += 1
+                print(f"WARNING: could not fetch duration for a recording ({exc})")
+        if len(recordings) < 200:
+            break
+        after = recordings[-1]["drive_id"]
     print(
         f"RESULT: duration backfill complete; updated={updated}; "
-        f"unavailable={unavailable}; checked={len(recordings)}"
+        f"unavailable={unavailable}; checked={checked}"
     )
 
 

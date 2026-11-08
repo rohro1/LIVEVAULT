@@ -1,14 +1,36 @@
+import io
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 
-from drive_admin import backfill_durations, delete_recording
+from drive_admin import backfill_durations, delete_recording, probe_drive_duration
 
 
 class DriveAdminTests(unittest.TestCase):
+    def test_video_duration_probe_downloads_from_drive_and_uses_ffprobe(self):
+        response = io.BytesIO(b"video data")
+
+        def run_ffprobe(command, **kwargs):
+            with open(command[-1], "rb") as video:
+                self.assertEqual(video.read(), b"video data")
+            return SimpleNamespace(returncode=0, stdout="302.456\n")
+
+        with patch("drive_admin.urllib.request.urlopen", return_value=response) as download, patch(
+            "drive_admin.subprocess.run", side_effect=run_ffprobe
+        ):
+            duration = probe_drive_duration("drive_file_12345", "access-token")
+
+        self.assertEqual(duration, 302.456)
+        self.assertIn("alt=media", download.call_args.args[0].full_url)
+        self.assertEqual(
+            download.call_args.args[0].headers["Authorization"],
+            "Bearer access-token",
+        )
+
     def test_backfill_saves_exact_duration_from_drive_video_metadata(self):
         requests = []
         recording = {
@@ -39,6 +61,39 @@ class DriveAdminTests(unittest.TestCase):
                 "/api/internal/recordings/drive_file_12345",
                 "PATCH",
                 {"duration_seconds": 302.45},
+            ),
+        )
+
+    def test_backfill_probes_video_when_drive_metadata_has_no_duration(self):
+        requests = []
+        recording = {
+            "drive_id": "drive_file_12345",
+            "filename": "alice_room_20261108_120000_part001.mp4",
+        }
+
+        def dashboard_request(path, method="GET", body=None):
+            requests.append((path, method, body))
+            if path.endswith("missing-duration"):
+                return {"recordings": [recording]}
+            return {"ok": True}
+
+        with patch("drive_admin.dashboard_request", side_effect=dashboard_request), patch(
+            "drive_admin.drive_file",
+            return_value={
+                "id": recording["drive_id"],
+                "name": recording["filename"],
+                "trashed": False,
+            },
+        ), patch("drive_admin.probe_drive_duration", return_value=302.456) as probe:
+            backfill_durations("access-token")
+
+        probe.assert_called_once_with(recording["drive_id"], "access-token")
+        self.assertEqual(
+            requests[-1],
+            (
+                "/api/internal/recordings/drive_file_12345",
+                "PATCH",
+                {"duration_seconds": 302.456},
             ),
         )
 

@@ -66,6 +66,14 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
           if (sql.includes("SELECT drive_id FROM recordings WHERE drive_id")) {
             return recordings.get(values[0]) || null;
           }
+          if (sql.includes("SELECT COUNT(*) AS count FROM recordings")) {
+            return {
+              count: [...recordings.values()].filter(
+                (recording) => recording.duration_seconds == null ||
+                  recording.duration_seconds <= 0,
+              ).length,
+            };
+          }
           throw new Error(`Unexpected first() query: ${sql}`);
         },
         async all() {
@@ -74,6 +82,30 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
               results: [...accounts]
                 .filter(([, account]) => account.active === 1)
                 .map(([username]) => ({ username })),
+            };
+          }
+          if (sql.includes("FROM recordings") && sql.includes("ORDER BY started_at")) {
+            return {
+              results: [...recordings.values()]
+                .sort((a, b) => b.started_at.localeCompare(a.started_at))
+                .slice(0, 200),
+            };
+          }
+          if (sql.includes("duration_seconds IS NULL")) {
+            let missing = [...recordings.values()]
+              .filter((recording) => recording.duration_seconds == null ||
+                recording.duration_seconds <= 0)
+              .sort((a, b) => a.drive_id.localeCompare(b.drive_id));
+            if (sql.includes("drive_id > ?")) {
+              missing = missing.filter((recording) => recording.drive_id > values[0]);
+            }
+            return {
+              results: missing.slice(0, 200)
+                .map(({ drive_id, username, filename }) => ({
+                  drive_id,
+                  username,
+                  filename,
+                })),
             };
           }
           throw new Error(`Unexpected all() query: ${sql}`);
@@ -190,6 +222,26 @@ async function backfillDurations(env) {
       },
       body: "{}",
     }),
+    env,
+  });
+}
+
+async function listRecordings(env) {
+  return onRequest({
+    request: new Request("https://livevault.example/api/recordings", {
+      headers: { Cookie: await sessionCookie() },
+    }),
+    env,
+  });
+}
+
+async function listMissingDurations(env, after) {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return onRequest({
+    request: new Request(
+      `https://livevault.example/api/internal/recordings/missing-duration${query}`,
+      { headers: { Authorization: "Bearer dashboard-token" } },
+    ),
     env,
   });
 }
@@ -461,6 +513,50 @@ test("duration backfill queues a Drive maintenance workflow", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("recordings report missing durations across the full Drive history", async () => {
+  const recordings = Array.from({ length: 201 }, (_, index) => ({
+    drive_id: `drive_file_${String(index).padStart(5, "0")}`,
+    username: "alice",
+    started_at: `20261108_${String(index).padStart(6, "0")}`,
+    part_number: 1,
+    filename: `alice_part${index}.mp4`,
+    drive_url: "https://drive.google.com/",
+    file_size: 100,
+    duration_seconds: index === 0 ? 0 : 120,
+    created_at: "2026-11-08T00:00:00.000Z",
+  }));
+  const response = await listRecordings(
+    createEnvironment(createDatabase([], recordings)),
+  );
+
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.recordings.length, 200);
+  assert.equal(result.missing_durations, 1);
+});
+
+test("missing-duration endpoint supports paging beyond 200 Drive files", async () => {
+  const recordings = Array.from({ length: 205 }, (_, index) => ({
+    drive_id: `drive_file_${String(index).padStart(5, "0")}`,
+    username: "alice",
+    filename: `alice_part${index}.mp4`,
+    duration_seconds: 0,
+  }));
+  const env = createEnvironment(createDatabase([], recordings));
+  const firstResponse = await listMissingDurations(env);
+  const firstPage = await firstResponse.json();
+  const secondResponse = await listMissingDurations(
+    env,
+    firstPage.recordings.at(-1).drive_id,
+  );
+  const secondPage = await secondResponse.json();
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(firstPage.recordings.length, 200);
+  assert.equal(secondResponse.status, 200);
+  assert.equal(secondPage.recordings.length, 5);
 });
 
 test("recording deletion rejects file IDs not present in the dashboard", async () => {
