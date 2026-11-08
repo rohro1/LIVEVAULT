@@ -290,9 +290,10 @@ async function initializeAccounts(env) {
 async function accountList(env) {
   const rows = await env.DB.prepare(
     `SELECT accounts.username, accounts.active, accounts.created_at,
-            account_status.online, account_status.recorder_status, account_status.checked_at
-     FROM accounts LEFT JOIN account_status USING (username)
-     ORDER BY accounts.username`,
+           account_status.online, account_status.recorder_status,
+           account_status.recording_started_at, account_status.checked_at
+    FROM accounts LEFT JOIN account_status USING (username)
+    ORDER BY accounts.username`,
   ).all();
   return (rows.results || []).map((row) => ({
     username: row.username,
@@ -300,6 +301,7 @@ async function accountList(env) {
     created_at: row.created_at,
     online: row.online === null ? null : row.online === 1,
     recorder_status: row.recorder_status || "idle",
+    recording_started_at: row.recording_started_at,
     checked_at: row.checked_at,
   }));
 }
@@ -507,9 +509,21 @@ async function internalStatus(request, env) {
   }
   const recorderStatus = account.active ? body.recorder_status : "idle";
   await env.DB.prepare(
-    `INSERT INTO account_status (username, online, recorder_status, checked_at)
-     VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    `INSERT INTO account_status
+       (username, online, recorder_status, recording_started_at, checked_at)
+     VALUES (
+       ?, ?, ?, CASE WHEN ? = 1 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END,
+       strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     )
      ON CONFLICT(username) DO UPDATE SET
+       recording_started_at = CASE
+         WHEN excluded.recorder_status = 'recording' AND excluded.online = 1
+           AND account_status.recorder_status = 'recording' AND account_status.online = 1
+           THEN account_status.recording_started_at
+         WHEN excluded.recorder_status = 'recording' AND excluded.online = 1
+           THEN excluded.recording_started_at
+         ELSE NULL
+       END,
        online = excluded.online,
        recorder_status = excluded.recorder_status,
        checked_at = excluded.checked_at`,
@@ -517,6 +531,7 @@ async function internalStatus(request, env) {
     username,
     body.online === null ? null : body.online ? 1 : 0,
     recorderStatus,
+    recorderStatus === "recording" && body.online === true ? 1 : 0,
   ).run();
   await addActivity(env, username, body.message);
   return json({ ok: true });
@@ -689,6 +704,11 @@ async function handle(request, env) {
     const result = await env.DB.prepare("UPDATE accounts SET active = ? WHERE username = ?")
       .bind(body.active ? 1 : 0, username).run();
     if (!result.meta.changes) throw new HttpError(404, "Account was not found");
+    if (!body.active) {
+      await env.DB.prepare(
+        "UPDATE account_status SET recorder_status = 'idle', recording_started_at = NULL WHERE username = ?",
+      ).bind(username).run();
+    }
     await logAccountLifecycle(
       env,
       username,

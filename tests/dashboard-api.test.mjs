@@ -36,6 +36,7 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
     {
       online: account.online ?? null,
       recorder_status: account.recorder_status || "idle",
+      recording_started_at: account.recording_started_at || null,
       checked_at: account.checked_at || null,
     },
   ]));
@@ -54,6 +55,9 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
           return this;
         },
         async first() {
+          if (sql.includes("SELECT value FROM dashboard_settings WHERE key = 'accounts_initialized'")) {
+            return { value: "1" };
+          }
           if (sql.includes("SELECT accounts.active, account_status.checked_at")) {
             return accounts.get(values[0]) || null;
           }
@@ -77,6 +81,16 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
           throw new Error(`Unexpected first() query: ${sql}`);
         },
         async all() {
+          if (sql.includes("FROM accounts LEFT JOIN account_status")) {
+            return {
+              results: [...accounts].map(([username, account]) => ({
+                username,
+                active: account.active,
+                created_at: account.created_at,
+                ...accountStatuses.get(username),
+              })),
+            };
+          }
           if (sql.includes("SELECT username FROM accounts WHERE active = 1")) {
             return {
               results: [...accounts]
@@ -134,12 +148,30 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
             return { meta: { changes: 1 } };
           }
           if (sql.includes("INSERT INTO account_status")) {
+            const previous = accountStatuses.get(values[0]);
+            const recording = values[2] === "recording" && values[1] === 1;
             accountStatuses.set(values[0], {
               online: values[1],
               recorder_status: values[2],
+              recording_started_at: recording
+                ? previous?.recorder_status === "recording" && previous.online === 1
+                  ? previous.recording_started_at
+                  : new Date().toISOString()
+                : null,
               checked_at: new Date().toISOString(),
             });
             return { meta: { changes: 1 } };
+          }
+          if (sql.includes("UPDATE account_status SET recorder_status = 'idle'")) {
+            const previous = accountStatuses.get(values[0]);
+            if (previous) {
+              accountStatuses.set(values[0], {
+                ...previous,
+                recorder_status: "idle",
+                recording_started_at: null,
+              });
+            }
+            return { meta: { changes: Number(Boolean(previous)) } };
           }
           if (sql.includes("INSERT INTO activity_logs")) {
             activity.unshift({ username: values[0], message: values[1] });
@@ -190,6 +222,15 @@ async function checkAccounts(env, body = {}) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+    }),
+    env,
+  });
+}
+
+async function getAccounts(env) {
+  return onRequest({
+    request: new Request("https://livevault.example/api/accounts", {
+      headers: { Cookie: await sessionCookie() },
     }),
     env,
   });
@@ -450,6 +491,34 @@ test("a failed recorder check clears an earlier online result", async () => {
     username: "alice",
     message: "Recorder could not obtain a stream URL",
   });
+});
+
+test("recording start time persists across heartbeats and clears when recording stops", async () => {
+  const database = createDatabase([{ username: "alice", active: 1 }]);
+  const env = createEnvironment(database);
+  const report = (online, recorder_status, message) => reportInternalStatus(env, {
+    username: "alice",
+    online,
+    recorder_status,
+    message,
+  });
+
+  assert.equal((await report(true, "recording", "Recording stream")).status, 200);
+  const startedAt = database.accountStatuses.get("alice").recording_started_at;
+  assert.ok(startedAt);
+
+  assert.equal((await report(true, "recording", "Recording stream")).status, 200);
+  assert.equal(database.accountStatuses.get("alice").recording_started_at, startedAt);
+
+  assert.equal((await report(false, "idle", "Account is offline")).status, 200);
+  assert.equal(database.accountStatuses.get("alice").recording_started_at, null);
+
+  assert.equal((await report(true, "recording", "Recording stream")).status, 200);
+  const restartedAt = database.accountStatuses.get("alice").recording_started_at;
+  assert.ok(restartedAt);
+  const response = await getAccounts(env);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).accounts[0].recording_started_at, restartedAt);
 });
 
 test("manual checks are rate limited to one dispatched scan per minute", async () => {

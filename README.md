@@ -211,13 +211,13 @@ changes sync the active list back to GitHub.
    npx wrangler d1 execute livevault --remote --file=dashboard/schema.sql
    ```
 
-   For an existing installation, apply the one-time recording-duration
-   and manual-monitor-throttle migrations before deploying the updated
-   dashboard:
+   For an existing installation, apply the one-time D1 migrations before
+   deploying the updated dashboard:
 
    ```sh
    npx wrangler d1 execute livevault --remote --file=dashboard/add-recording-duration.sql
    npx wrangler d1 execute livevault --remote --file=dashboard/add-monitor-manual-dispatches.sql
+   npx wrangler d1 execute livevault --remote --file=dashboard/add-recording-started-at.sql
    ```
 
    Verify:

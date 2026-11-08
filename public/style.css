@@ -38,6 +38,7 @@ button.danger { background: #482735; color: #ffd9df; }
 .status-pill.online { color: #9af0c1; background: #173a35; }
 .status-pill.offline { color: #aab4ca; background: #222b40; }
 .status-pill.recording { color: #ffb6bd; background: #492832; }
+.recording-elapsed { font-variant-numeric: tabular-nums; }
 .checked-at { color: #8793af; font-size: .76rem; }
 .row-actions { justify-content: flex-end; }
 .live-indicator { display: inline-flex; align-items: center; gap: 7px; color: #9af0c1; font-size: .72rem; font-weight: 800; letter-spacing: .08em; }

@@ -72,6 +72,29 @@ function formatDuration(seconds) {
     : minutes ? `${minutes}m ${remainder}s` : `${remainder}s`;
 }
 
+function formatElapsedTime(startedAt, now = Date.now()) {
+  const start = Date.parse(startedAt);
+  if (!Number.isFinite(start)) return "00:00:00";
+  const elapsedSeconds = Math.max(0, Math.floor((now - start) / 1000));
+  const hours = Math.floor(elapsedSeconds / 3600);
+  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+  const seconds = elapsedSeconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function updateRecordingElapsed() {
+  for (const timer of document.querySelectorAll("[data-recording-start]")) {
+    const checkedAt = Date.parse(timer.dataset.recordingCheckedAt);
+    if (!Number.isFinite(checkedAt) || Date.now() - checkedAt > ACCOUNT_STATUS_STALE_MS) {
+      timer.textContent = "status stale";
+      timer.setAttribute("aria-label", "Recording status is stale");
+      continue;
+    }
+    timer.textContent = formatElapsedTime(timer.dataset.recordingStart);
+    timer.setAttribute("aria-label", `Recording for ${timer.textContent}`);
+  }
+}
+
 function renderAccounts(accounts) {
   accountsList.replaceChildren();
   for (const account of accounts) {
@@ -124,6 +147,16 @@ function renderAccounts(accounts) {
         : account.recorder_status === "error"
           ? "Error"
           : account.active ? "Watching" : "Paused";
+    if (account.active && account.online === true && !stale &&
+        account.recorder_status === "recording" && account.recording_started_at) {
+      const elapsed = document.createElement("time");
+      elapsed.className = "recording-elapsed";
+      elapsed.dateTime = account.recording_started_at;
+      elapsed.dataset.recordingStart = account.recording_started_at;
+      elapsed.dataset.recordingCheckedAt = account.checked_at;
+      elapsed.setAttribute("aria-label", "Recording duration");
+      recording.append(" ", elapsed);
+    }
     status.append(online, recording);
     if (account.checked_at) {
       const checked = document.createElement("small");
@@ -623,3 +656,5 @@ window.setInterval(() => {
     loadDashboard(true).catch((error) => showNotice(error.message, true));
   }
 }, 30_000);
+
+window.setInterval(updateRecordingElapsed, 1_000);
