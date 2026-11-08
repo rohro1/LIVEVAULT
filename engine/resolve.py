@@ -55,7 +55,7 @@ def main():
     roomfile = sys.argv[3] if len(sys.argv) > 3 else None
     mode = os.environ.get("QUALITY", "compat")
     pool = []
-    last_error = "TikTok did not return usable stream URL data"
+    last_error = "TikTok did not return a usable stream URL"
     for attempt in range(1, STREAM_ATTEMPTS + 1):
         checked_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
         print(
@@ -89,8 +89,8 @@ def main():
             print("RESULT: empty-stream diagnostics: " +
                   json.dumps(describe_response(d), sort_keys=True))
             last_error = (
-                "TikTok reports this account as live but returned no usable "
-                "streamData/hevcStreamData URL"
+                "TikTok reports this account as live but its API response "
+                "contains no usable streamData/hevcStreamData URL"
             )
         except urllib.error.HTTPError as exc:
             last_error = f"TikTok stream request returned HTTP {exc.code}"
