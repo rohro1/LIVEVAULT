@@ -1,4 +1,4 @@
-import json, os, sys, urllib.request
+import json, os, sys, urllib.parse, urllib.request
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 RANK = {"origin": 0, "uhd_60": 1, "uhd": 1, "hd_60": 2, "hd": 2, "sd": 3, "ld": 4, "md": 5}
@@ -29,14 +29,20 @@ def candidates(room):
 
 def main():
     user, outfile = sys.argv[1].lstrip("@"), sys.argv[2]
+    roomfile = sys.argv[3] if len(sys.argv) > 3 else None
     mode = os.environ.get("QUALITY", "compat")
-    d = get_json(f"https://www.tiktok.com/api-live/user/room/?aid=1988&uniqueId={user}&sourceType=54")
+    encoded_user = urllib.parse.quote(user, safe="")
+    d = get_json(f"https://www.tiktok.com/api-live/user/room/?aid=1988&uniqueId={encoded_user}&sourceType=54")
     data = d.get("data") or {}
-    status = (data.get("user") or {}).get("status")
+    user_data = data.get("user") or {}
+    status = user_data.get("status")
     print(f"RESULT: user status={status} (2 means live)")
     if status != 2:
         print("RESULT: not live, nothing to record")
         sys.exit(2)
+    if roomfile:
+        with open(roomfile, "w") as f:
+            f.write(str(user_data.get("roomId") or ""))
     cands, seen = candidates(data.get("liveRoom") or {})
     print(f"RESULT: stream data layout (key names only): {seen}")
     print(f"RESULT: found {len(cands)} stream options: " +

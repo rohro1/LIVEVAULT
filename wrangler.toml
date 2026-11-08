@@ -1,0 +1,8 @@
+name = "livevault-dashboard"
+compatibility_date = "2026-11-07"
+pages_build_output_dir = "./public"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "livevault"
+database_id = "a215a27b-60ef-431c-9f1e-d2c6746ba189"

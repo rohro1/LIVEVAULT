@@ -1,0 +1,60 @@
+name: Record live stream
+run-name: record-${{ inputs.host_key }}
+on:
+  workflow_dispatch:
+    inputs:
+      host_key:
+        description: Opaque account key
+        required: true
+        type: string
+      first_part:
+        description: First numbered part to create
+        required: true
+        default: "1"
+        type: string
+      started_at:
+        description: Session start in America/New_York
+        required: true
+        type: string
+      segment_minutes:
+        description: Segment length
+        required: true
+        default: "30"
+        type: choice
+        options:
+          - "30"
+          - "60"
+permissions:
+  actions: write
+  contents: read
+concurrency:
+  group: livevault-record-${{ inputs.host_key }}
+  cancel-in-progress: false
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HOST_KEY_SECRET: ${{ secrets.HOST_KEY_SECRET }}
+      DRIVE_CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+      DRIVE_CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
+      DRIVE_REFRESH_TOKEN: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+      DASHBOARD_API_URL: ${{ vars.DASHBOARD_API_URL }}
+      DASHBOARD_API_TOKEN: ${{ secrets.DASHBOARD_API_TOKEN }}
+      QUIET_HOURS_ENABLED: ${{ vars.QUIET_HOURS_ENABLED || 'false' }}
+      QUIET_START: ${{ vars.QUIET_START }}
+      QUIET_END: ${{ vars.QUIET_END }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      GITHUB_REF_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FFmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+      - name: Record and upload verified parts
+        run: >-
+          python3 engine/record.py
+          '${{ inputs.host_key }}'
+          '${{ inputs.first_part }}'
+          '${{ inputs.started_at }}'
+          '${{ inputs.segment_minutes }}'

@@ -1,1 +1,173 @@
 # LIVEVAULT
+
+LIVEVAULT contains a GitHub Actions recording engine and a Cloudflare Pages
+dashboard. The engine checks tracked TikTok accounts every 10 minutes, records
+host-based live streams, saves numbered 30- or 60-minute MP4 parts to Google
+Drive, and hands long recordings to a new Actions job before the six-hour job
+limit.
+
+The dashboard code must be deployed and configured before it is reachable.
+A guest-only appearance is not detected or recorded unless the live's host is
+tracked. TikTok endpoints are unofficial and may change; neither detection nor
+uninterrupted recording is guaranteed.
+Scheduled-workflow keep-alive and failure notifications are not implemented yet.
+Recordings and stream URLs are never uploaded to Actions artifacts or releases.
+Review GitHub's current Actions terms before using the repository for continuous
+recording.
+
+## Configure GitHub
+
+In the repository's **Settings → Secrets and variables → Actions**, add:
+
+**Optional repository variable**
+
+- `SEGMENT_MINUTES`: `30` or `60` (optional; defaults to `30`).
+
+Do not maintain `TRACKED` manually. The dashboard adds and updates it when you
+manage usernames on the website. Existing `TRACKED` names are imported the
+first time the dashboard opens.
+
+**Repository secrets**
+
+- `HOST_KEY_SECRET`: generate a random secret in the Codespace terminal:
+
+  ```sh
+  python3 -c 'import secrets; print(secrets.token_hex(32))'
+  ```
+
+  Copy the output directly to the GitHub secret; do not commit or paste it into
+  chat. It lets workflows refer to tracked accounts using opaque keys instead
+  of exposing usernames in workflow-dispatch inputs.
+- `DRIVE_CLIENT_ID`
+- `DRIVE_CLIENT_SECRET`
+- `DRIVE_REFRESH_TOKEN`
+
+**Simplest Google credential location:** on GitHub, open
+**rohro1/LIVEVAULT → Settings → Secrets and variables → Actions → New
+repository secret**. Add the three names above there, one at a time, and paste
+each matching value from Google Cloud/OAuth Playground. Do not put these
+credentials in the website or Cloudflare.
+
+`GITHUB_TOKEN` is supplied by GitHub Actions. The workflows require Actions
+read/write permission so the monitor can start recorder jobs and recorder jobs
+can hand off to their successors.
+
+## Configure Google Drive OAuth
+
+1. In Google Cloud Console, create/select a project and enable the Google Drive
+   API.
+2. Configure Google Auth Platform consent and add the Google account that owns
+   the destination Drive as a test user.
+3. Use the `https://www.googleapis.com/auth/drive.file` scope. Google lists it
+   as non-sensitive and it allows the app to create files it owns; LIVEVAULT
+   verifies each newly-uploaded file by its returned ID.
+4. In **Credentials → Create credentials → OAuth client ID**, create a **Web
+   application** client and add
+   `https://developers.google.com/oauthplayground` as an authorized redirect
+   URI.
+5. Open [OAuth 2.0 Playground](https://developers.google.com/oauthplayground/),
+   open its settings, enable **Use your own OAuth credentials**, and enter that
+   client ID and secret. In Step 1, request only
+   `https://www.googleapis.com/auth/drive.file`, authorize using the Google
+   account that will own the recordings, and exchange the authorization code
+   in Step 2. Copy the refresh token shown there. Using your own client
+   credentials avoids OAuth Playground's separate 24-hour refresh-token
+   revocation.
+6. Store the client ID, client secret, and refresh token as the three GitHub
+   Actions secrets above. Never commit OAuth credentials.
+7. If the OAuth app remains in **Testing**, Google says authorizations for
+   Drive scopes expire after seven days, including refresh tokens. That is not
+   suitable for uninterrupted operation. For ongoing use, move the app to
+   **Production** and complete any Google branding/verification requirements
+   shown for your project.
+
+Google's current guidance:
+[OAuth app audience and publishing status](https://support.google.com/cloud/answer/15549945),
+[Drive API scopes](https://developers.google.com/workspace/drive/api/guides/api-specific-auth),
+[OAuth refresh tokens](https://developers.google.com/identity/protocols/oauth2/web-server).
+
+## Optional quiet hours
+
+In the same Actions variables page, set:
+
+- `QUIET_HOURS_ENABLED` to `true`
+- `QUIET_START` and `QUIET_END` to local 24-hour times such as `04:00` and
+  `08:00`
+
+Times are interpreted in `America/New_York` and follow EST/EDT. Quiet hours are
+off unless explicitly enabled. Active recordings stop at quiet-hour start;
+recording jobs recheck the tracked list and quiet-hours setting while running.
+
+## Start and verify
+
+After the repository variables and secrets are set, enable GitHub Actions. The
+**Live monitor** workflow is scheduled every 10 minutes (GitHub may delay a
+scheduled start); it can also be started from **Actions → Live monitor → Run
+workflow**. The first detected live host starts a recorder job. Successful
+parts are uploaded to the Drive account used for OAuth and deleted from runner
+disk only after Drive confirms the uploaded file ID, name, and size.
+
+If the repository is public, workflow metadata and logs are public too. Logs
+avoid account names and stream URLs; recorder job names use secret-keyed opaque
+account identifiers. The destination Drive files remain private unless their
+owner changes sharing settings.
+
+## Deploy the dashboard
+
+The dashboard uses Cloudflare Pages Functions and D1. It stores account
+configuration and verified Drive links in D1. The first signed-in dashboard
+load imports the existing `TRACKED` variable into D1; subsequent account
+changes sync the active list back to GitHub.
+
+1. **Codespace terminal:** create the D1 database and copy its `database_id`
+   from the output:
+
+   ```sh
+   npx wrangler d1 create livevault
+   ```
+
+   Verify:
+
+   ```sh
+   npx wrangler d1 list
+   ```
+
+2. **Codespace editor:** replace `REPLACE_WITH_D1_DATABASE_ID` in
+   `wrangler.toml` with that ID, then push the repository.
+3. **Cloudflare website:** create a Pages project named `livevault-dashboard`
+   connected to this repository. Leave the build command empty and set the
+   output directory to `public`. Keep the D1 binding named `DB` and linked to
+   the database ID from step 1.
+4. **Codespace terminal:** apply the D1 schema:
+
+   ```sh
+   npx wrangler d1 execute livevault --remote --file=dashboard/schema.sql
+   ```
+
+   Verify:
+
+   ```sh
+   npx wrangler d1 execute livevault --remote --command="SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+   ```
+
+5. **Cloudflare website → Pages → livevault-dashboard → Settings → Variables
+   and Secrets:** add these values. Keep all entries marked **Secret** private.
+   - Secrets: `DASHBOARD_PASSWORD`, `DASHBOARD_SESSION_SECRET`,
+     `DASHBOARD_API_TOKEN`, `GITHUB_PAT`, `HOST_KEY_SECRET`
+   - Variable: `GITHUB_REPOSITORY` = `rohro1/LIVEVAULT`
+   - `GITHUB_PAT` must be a fine-grained token limited to this repository with
+     repository **Variables: read and write** permission.
+   - Use a different strong random value for each dashboard password/session
+     secret/ingest token. `HOST_KEY_SECRET` must match the GitHub Actions
+     secret of the same name.
+6. **GitHub website → repository Settings → Secrets and variables → Actions:**
+   add the same `DASHBOARD_API_TOKEN` as a repository secret. Add a repository
+   variable `DASHBOARD_API_URL` with the deployed Pages URL, for example
+   `https://livevault-dashboard.pages.dev`. Push once after adding the workflow
+   environment change so Actions receives it.
+7. **Cloudflare website:** redeploy the Pages project after setting its secrets
+   and D1 binding, then open its URL and sign in with `DASHBOARD_PASSWORD`.
+
+The dashboard's first load creates or synchronizes `TRACKED`. Add, pause,
+resume, or remove accounts there. Verified Drive uploads appear in the
+recordings list after the Actions workflow receives the internal ingest token.

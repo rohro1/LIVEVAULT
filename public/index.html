@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>LIVEVAULT</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">LIVEVAULT</p>
+          <h1>Live recordings</h1>
+        </div>
+        <button id="logout" class="secondary hidden" type="button">Sign out</button>
+      </header>
+
+      <p id="notice" role="status" aria-live="polite"></p>
+
+      <section id="login-panel" class="panel hidden">
+        <h2>Sign in</h2>
+        <form id="login-form">
+          <label for="password">Dashboard password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button type="submit">Sign in</button>
+        </form>
+      </section>
+
+      <div id="dashboard" class="hidden">
+        <section class="panel">
+          <div class="section-title">
+            <div>
+              <h2>Accounts</h2>
+              <p>Only lives hosted by a tracked account are recorded.</p>
+            </div>
+          </div>
+          <form id="add-form" class="add-form">
+            <label class="sr-only" for="username">TikTok username</label>
+            <input id="username" name="username" placeholder="TikTok username" maxlength="24" required>
+            <button type="submit">Add account</button>
+          </form>
+          <ul id="accounts" class="account-list"></ul>
+        </section>
+
+        <section class="panel">
+          <div class="section-title">
+            <div>
+              <h2>Live activity</h2>
+              <p>Account status checks run about every 10 minutes. This panel refreshes every 30 seconds.</p>
+            </div>
+            <span class="live-indicator"><span></span> ACTIVITY</span>
+          </div>
+          <ol id="activity" class="activity-list"></ol>
+        </section>
+
+        <section class="panel">
+          <div class="section-title">
+            <div>
+              <h2>Recordings</h2>
+              <p>Latest 200 verified Google Drive uploads.</p>
+            </div>
+            <button id="refresh" class="secondary" type="button">Refresh</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Account</th><th>Started (New York)</th><th>Part</th><th>Size</th><th>Drive</th></tr>
+              </thead>
+              <tbody id="recordings"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>
