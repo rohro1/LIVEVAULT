@@ -241,7 +241,7 @@ def drive_upload(path, filename):
     return verified
 
 
-def notify_dashboard(username, room_id, stamp, part, filename, verified):
+def notify_dashboard(username, room_id, stamp, part, filename, duration_seconds, verified):
     endpoint = os.environ.get("DASHBOARD_API_URL", "").rstrip("/")
     token = os.environ.get("DASHBOARD_API_TOKEN", "")
     if not endpoint and not token:
@@ -258,6 +258,7 @@ def notify_dashboard(username, room_id, stamp, part, filename, verified):
         "drive_id": verified["id"],
         "drive_url": verified["webViewLink"],
         "file_size": int(verified["size"]),
+        "duration_seconds": duration_seconds,
     }
     headers = {
         "Authorization": f"Bearer {token}",
@@ -398,10 +399,12 @@ def upload_segments(directory, username, room_id, stamp, next_part, finalized):
         )
         if result.returncode != 0 or not mp4.is_file():
             raise RuntimeError(f"Could not convert recording part {part} to MP4")
-        probe_duration(mp4)
+        duration_seconds = probe_duration(mp4)
         filename = f"{username}_{room_id}_{stamp}_part{part:03d}.mp4"
         verified = drive_upload(mp4, filename)
-        notify_dashboard(username, room_id, stamp, part, filename, verified)
+        notify_dashboard(
+            username, room_id, stamp, part, filename, duration_seconds, verified
+        )
         mp4.unlink()
         segment.unlink()
         print(f"RESULT: part {part:03d} uploaded and verified in Google Drive")

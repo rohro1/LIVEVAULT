@@ -208,6 +208,18 @@ async function syncTracked(env) {
   if (!response.ok) throw new HttpError(502, `GitHub variable update failed (HTTP ${response.status})`);
 }
 
+async function dispatchMonitor(env) {
+  const response = await githubRequest(
+    env,
+    "/actions/workflows/monitor.yml/dispatches",
+    "POST",
+    { ref: "main" },
+  );
+  if (response.status !== 204) {
+    throw new HttpError(502, `Monitor dispatch failed (HTTP ${response.status})`);
+  }
+}
+
 async function initializeAccounts(env) {
   const initialized = await env.DB.prepare(
     "SELECT value FROM dashboard_settings WHERE key = 'accounts_initialized'",
@@ -374,7 +386,9 @@ async function internalRecording(request, env) {
     throw new HttpError(400, "Recording metadata is incomplete");
   }
   if (!/^\d{8}_\d{6}$/.test(body.started_at) || !Number.isInteger(body.part_number) ||
-      body.part_number < 1 || !Number.isInteger(body.file_size) || body.file_size < 1) {
+      body.part_number < 1 || !Number.isInteger(body.file_size) || body.file_size < 1 ||
+      typeof body.duration_seconds !== "number" ||
+      !Number.isFinite(body.duration_seconds) || body.duration_seconds <= 0) {
     throw new HttpError(400, "Recording metadata is invalid");
   }
   let driveUrl;
@@ -388,8 +402,9 @@ async function internalRecording(request, env) {
   }
   await env.DB.prepare(
     `INSERT OR IGNORE INTO recordings
-     (drive_id, username, room_id, started_at, part_number, filename, drive_url, file_size)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     (drive_id, username, room_id, started_at, part_number, filename, drive_url, file_size,
+      duration_seconds)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     body.drive_id,
     username,
@@ -399,6 +414,7 @@ async function internalRecording(request, env) {
     body.filename,
     driveUrl.toString(),
     body.file_size,
+    body.duration_seconds,
   ).run();
   await addActivity(env, username, `Uploaded ${body.filename}`);
   return json({ ok: true }, 201);
@@ -482,13 +498,32 @@ async function handle(request, env) {
     requireSameOrigin(request);
     const body = await readJson(request);
     const username = trackedUsername(body.username);
+    const existing = await env.DB.prepare(
+      `SELECT accounts.active, account_status.checked_at
+       FROM accounts LEFT JOIN account_status USING (username)
+       WHERE accounts.username = ?`,
+    ).bind(username).first();
     await env.DB.prepare(
       `INSERT INTO accounts (username, active) VALUES (?, 1)
        ON CONFLICT(username) DO UPDATE SET active = 1`,
     )
       .bind(username).run();
     await syncTracked(env);
-    return json({ ok: true }, 201);
+    const checkedAt = existing?.checked_at ? Date.parse(existing.checked_at) : NaN;
+    const statusIsStale = !Number.isFinite(checkedAt) || Date.now() - checkedAt >= 5 * 60_000;
+    const shouldCheckNow = !existing || existing.active !== 1 || statusIsStale;
+    if (shouldCheckNow) {
+      try {
+        await dispatchMonitor(env);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "GitHub API request failed";
+        throw new HttpError(
+          error instanceof HttpError ? error.status : 502,
+          `Account was saved, but its immediate status check could not be queued: ${detail}`,
+        );
+      }
+    }
+    return json({ ok: true, check_queued: shouldCheckNow }, 201);
   }
   if (path.startsWith("/api/accounts/") && request.method === "PATCH") {
     requireSameOrigin(request);
@@ -512,8 +547,11 @@ async function handle(request, env) {
   }
   if (path === "/api/recordings" && request.method === "GET") {
     const rows = await env.DB.prepare(
-      `SELECT username, room_id, started_at, part_number, filename, drive_url, file_size, created_at
-       FROM recordings ORDER BY created_at DESC LIMIT 200`,
+      `SELECT username, room_id, started_at, part_number, filename, drive_url, file_size,
+              duration_seconds, created_at
+       FROM recordings
+       ORDER BY started_at DESC, username ASC, part_number ASC, created_at ASC
+       LIMIT 200`,
     ).all();
     return json({ recordings: rows.results || [] });
   }

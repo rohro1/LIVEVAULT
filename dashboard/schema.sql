@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS recordings (
   filename TEXT NOT NULL,
   drive_url TEXT NOT NULL,
   file_size INTEGER NOT NULL,
+  duration_seconds REAL NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

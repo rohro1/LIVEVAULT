@@ -54,6 +54,17 @@ function formatBytes(bytes) {
   return `${value.toFixed(unit ? 1 : 0)} ${units[unit]}`;
 }
 
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "—";
+  const totalSeconds = Math.round(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainder = totalSeconds % 60;
+  return hours
+    ? `${hours}h ${minutes}m ${remainder}s`
+    : minutes ? `${minutes}m ${remainder}s` : `${remainder}s`;
+}
+
 function renderAccounts(accounts) {
   accountsList.replaceChildren();
   for (const account of accounts) {
@@ -170,6 +181,9 @@ function renderRecordings(recordings) {
     link.textContent = "Open";
     linkCell.append(link);
     row.append(linkCell);
+    const durationCell = document.createElement("td");
+    durationCell.textContent = formatDuration(recording.duration_seconds);
+    row.append(durationCell);
     recordingsBody.append(row);
   }
 }
@@ -340,11 +354,22 @@ document.querySelector("#add-form").addEventListener("submit", async (event) => 
   const form = event.currentTarget;
   const username = new FormData(form).get("username");
   try {
-    await api("/api/accounts", { method: "POST", body: JSON.stringify({ username }) });
+    const result = await api("/api/accounts", {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    });
     form.reset();
     await loadDashboard();
-    showNotice("Account added.");
+    showNotice(result.check_queued
+      ? "Account added; an immediate status check is queued."
+      : "Account is already being watched.");
   } catch (error) {
+    try {
+      await loadDashboard(true);
+    } catch (refreshError) {
+      showNotice(`${error.message}; dashboard refresh failed: ${refreshError.message}`, true);
+      return;
+    }
     showNotice(error.message, true);
   }
 });

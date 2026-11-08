@@ -114,6 +114,10 @@ the 5-minute monitor interval, without delaying recordings for other accounts.
 Successful
 parts are uploaded to the Drive account used for OAuth and deleted from runner
 disk only after Drive confirms the uploaded file ID, name, and size.
+Recording parts target 30 minutes by default. A part can be shorter if the live
+ends or the stream disconnects; the dashboard displays each uploaded video's
+measured duration so interruptions are visible. Parts are grouped by newest
+recording session with their part numbers in ascending order.
 If a TikTok status request fails, that account is shown as unknown/error and
 other tracked accounts are still checked. The recorder is shown as active only
 after FFmpeg produces stream data; startup failures are reported with sanitized
@@ -125,6 +129,11 @@ integration configuration, tracked-account synchronization, and recent GitHub
 Actions runs. The dashboard must be deployed once after code changes for these
 diagnostics and UI updates to appear; ongoing checks and status refreshes then
 run automatically.
+Adding a new account syncs the tracked list and queues an immediate monitor run;
+subsequent checks continue on the normal five-minute cadence. The Cloudflare
+Pages `GITHUB_PAT` therefore needs repository **Variables: read and write** and
+**Actions: read and write** permissions. Replace an expired or unauthorized
+token there if dashboard diagnostics report HTTP 401.
 
 GitHub scheduled events may be delayed or unavailable. For a Cloudflare Cron
 fallback, create a fine-grained GitHub token limited to this repository with
@@ -177,6 +186,13 @@ changes sync the active list back to GitHub.
    npx wrangler d1 execute livevault --remote --file=dashboard/schema.sql
    ```
 
+   For an existing installation, apply the one-time recording-duration
+   migration before deploying the updated dashboard:
+
+   ```sh
+   npx wrangler d1 execute livevault --remote --file=dashboard/add-recording-duration.sql
+   ```
+
    Verify:
 
    ```sh
@@ -189,9 +205,10 @@ changes sync the active list back to GitHub.
      `DASHBOARD_API_TOKEN`, `GITHUB_PAT`, `HOST_KEY_SECRET`
    - Variable: `GITHUB_REPOSITORY` = `rohro1/LIVEVAULT`
    - `GITHUB_PAT` must be a fine-grained token limited to this repository with
-     repository **Variables: read and write** permission. Add **Actions: read**
-     if the dashboard should display recent workflow runs; that permission is
-     only for diagnostics, not for the monitor or recorder jobs.
+     repository **Variables: read and write** and **Actions: read and write**
+     permissions. Actions write is used to queue an immediate monitor run after
+     adding an account; Actions read lets the dashboard display recent workflow
+     runs.
    - Use a different strong random value for each dashboard password/session
      secret/ingest token. `HOST_KEY_SECRET` must match the GitHub Actions
      secret of the same name.

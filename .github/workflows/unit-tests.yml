@@ -17,5 +17,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - name: Test Cloudflare monitor scheduler
-        run: node --test tests/monitor-scheduler.test.mjs
+      - name: Test Cloudflare dashboard and monitor scheduler
+        run: node --test tests/dashboard-api.test.mjs tests/monitor-scheduler.test.mjs

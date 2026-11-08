@@ -12,6 +12,7 @@ from record import (
     ffmpeg_error_summary,
     resolve_stream,
     save_failure_reason,
+    upload_segments,
 )
 
 
@@ -39,6 +40,43 @@ class RecorderTests(unittest.TestCase):
 
             segment.write_bytes(b"stream data")
             self.assertTrue(capture_has_data(directory))
+
+    def test_uploaded_recording_reports_its_probed_duration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            (directory / "part_001.ts").write_bytes(b"stream data")
+
+            def convert_segment(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"mp4 data")
+                return Mock(returncode=0)
+
+            verified = {
+                "id": "drive-id",
+                "size": "8",
+                "webViewLink": "https://drive.google.com/file/d/drive-id/view",
+            }
+            with patch("record.subprocess.run", side_effect=convert_segment), patch(
+                "record.probe_duration", return_value=1800.25
+            ), patch("record.drive_upload", return_value=verified), patch(
+                "record.notify_dashboard"
+            ) as notify_dashboard:
+                next_part = upload_segments(
+                    directory, "alice", "room", "20261108_120000", 1, finalized=True
+                )
+
+        self.assertEqual(next_part, 2)
+        self.assertEqual(
+            notify_dashboard.call_args.args,
+            (
+                "alice",
+                "room",
+                "20261108_120000",
+                1,
+                "alice_room_20261108_120000_part001.mp4",
+                1800.25,
+                verified,
+            ),
+        )
 
     def test_ffmpeg_error_summary_redacts_source_urls(self):
         with tempfile.TemporaryDirectory() as temp_dir:
