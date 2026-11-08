@@ -17,6 +17,7 @@ from monitor import (
     main,
     parse_accounts,
     parse_live_status,
+    recorder_retry_delay,
 )
 from record import refresh_tracked_user, tracked_user
 
@@ -149,6 +150,78 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(
             dispatched[0]["inputs"]["host_key"],
             account_key("bob", "secret"),
+        )
+
+    def test_main_delays_retry_after_recent_failure_but_dispatches_other_live_users(self):
+        dispatched = []
+        status_updates = []
+        alice_key = account_key("alice", "secret")
+
+        def request(url, token=None, method="GET", body=None):
+            if method == "POST":
+                dispatched.append(body)
+            return {"workflow_runs": []}
+
+        environment = {
+            "TRACKED": "alice,bob",
+            "GITHUB_TOKEN": "token",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_REF_NAME": "main",
+            "HOST_KEY_SECRET": "secret",
+            "QUIET_HOURS_ENABLED": "false",
+        }
+        with patch.dict(os.environ, environment), patch(
+            "monitor.check_accounts",
+            return_value={"alice": True, "bob": True},
+        ), patch("monitor.request_json", side_effect=request), patch(
+            "monitor.recorder_retry_delay",
+            side_effect=lambda runs, key: 120 if key == alice_key else 0,
+        ), patch(
+            "monitor.update_dashboard_status",
+            side_effect=lambda *args: status_updates.append(args) or True,
+        ):
+            main()
+
+        self.assertEqual(len(dispatched), 1)
+        self.assertEqual(
+            dispatched[0]["inputs"]["host_key"],
+            account_key("bob", "secret"),
+        )
+        self.assertIn(
+            ("alice", True, "error"),
+            {update[:3] for update in status_updates},
+        )
+
+    def test_recorder_retry_delay_uses_bounded_exponential_backoff(self):
+        now = dt.datetime(2026, 11, 8, 12, 0, tzinfo=dt.timezone.utc)
+        host_key = account_key("alice", "secret")
+        runs = [
+            {
+                "display_title": f"record-{host_key}",
+                "status": "completed",
+                "conclusion": "failure",
+                "updated_at": "2026-11-08T11:59:00Z",
+            },
+            {
+                "display_title": f"record-{host_key}",
+                "status": "completed",
+                "conclusion": "failure",
+                "updated_at": "2026-11-08T11:50:00Z",
+            },
+        ]
+
+        self.assertEqual(recorder_retry_delay(runs, host_key, now), 9 * 60)
+        self.assertEqual(recorder_retry_delay(runs[:1], host_key, now), 4 * 60)
+        self.assertEqual(
+            recorder_retry_delay(
+                [{
+                    **runs[0],
+                    "conclusion": "success",
+                }],
+                host_key,
+                now,
+            ),
+            0,
         )
 
     def test_check_account_retries_a_transient_request_failure(self):

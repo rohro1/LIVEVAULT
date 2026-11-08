@@ -436,10 +436,16 @@ async function internalStatus(request, env) {
     `INSERT INTO account_status (username, online, recorder_status, checked_at)
      VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
      ON CONFLICT(username) DO UPDATE SET
-       online = excluded.online,
+       online = CASE WHEN ? IS NULL THEN account_status.online ELSE excluded.online END,
        recorder_status = excluded.recorder_status,
-       checked_at = excluded.checked_at`,
-  ).bind(username, body.online === null ? null : body.online ? 1 : 0, recorderStatus).run();
+       checked_at = CASE WHEN ? IS NULL THEN account_status.checked_at ELSE excluded.checked_at END`,
+  ).bind(
+    username,
+    body.online === null ? null : body.online ? 1 : 0,
+    recorderStatus,
+    body.online === null ? null : 1,
+    body.online === null ? null : 1,
+  ).run();
   await addActivity(env, username, body.message);
   return json({ ok: true });
 }

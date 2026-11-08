@@ -109,6 +109,8 @@ gets its own recorder job; jobs for different hosts can run concurrently, while
 duplicate jobs for the same host are serialized. GitHub may queue jobs when its
 available runner concurrency is exhausted. If TikTok reports a live before
 stream options are available, the resolver retries for up to 50 seconds.
+Repeated recorder failures use a per-account retry backoff, increasing from
+5 minutes up to 60 minutes, without delaying recordings for other accounts.
 Successful
 parts are uploaded to the Drive account used for OAuth and deleted from runner
 disk only after Drive confirms the uploaded file ID, name, and size.

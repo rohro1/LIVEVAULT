@@ -15,6 +15,8 @@ from tiktok import parse_live_status, request_headers, status_url
 API = "https://api.github.com"
 USER_AGENT = "LIVEVAULT/1.0"
 ET = ZoneInfo("America/New_York")
+RECORDER_RETRY_BASE_SECONDS = 5 * 60
+RECORDER_RETRY_MAX_SECONDS = 60 * 60
 
 
 def parse_accounts(value):
@@ -157,6 +159,36 @@ def check_account(username):
             raise first_error
 
 
+def recorder_retry_delay(runs, host_key, now=None):
+    account_runs = sorted(
+        (
+            run for run in runs
+            if run.get("display_title") == f"record-{host_key}"
+            and run.get("status") == "completed"
+        ),
+        key=lambda run: run.get("updated_at", ""),
+        reverse=True,
+    )
+    failures = 0
+    for run in account_runs:
+        if run.get("conclusion") != "failure":
+            break
+        failures += 1
+    if not failures:
+        return 0
+
+    completed_at = dt.datetime.fromisoformat(
+        account_runs[0]["updated_at"].replace("Z", "+00:00")
+    )
+    current_time = now or dt.datetime.now(dt.timezone.utc)
+    delay = min(
+        RECORDER_RETRY_BASE_SECONDS * (2 ** (failures - 1)),
+        RECORDER_RETRY_MAX_SECONDS,
+    )
+    elapsed = max(0, (current_time - completed_at).total_seconds())
+    return max(0, int(delay - elapsed))
+
+
 def update_dashboard_status(username, online, recorder_status, message):
     try:
         notify_dashboard(username, online, recorder_status, message)
@@ -227,6 +259,17 @@ def main():
                 else "Offline; queued recorder is checking the stream"
             )
         elif online and not quiet_hours:
+            retry_delay = recorder_retry_delay(runs, key)
+            if retry_delay:
+                minutes = max(1, (retry_delay + 59) // 60)
+                state = "error"
+                message = (
+                    "Live detected; recorder retry delayed after a recent failure "
+                    f"(retry in about {minutes} minute(s))"
+                )
+                if not update_dashboard_status(username, True, state, message):
+                    dashboard_failures += 1
+                continue
             try:
                 request_json(
                     f"{API}/repos/{repo}/actions/workflows/record.yml/dispatches",
