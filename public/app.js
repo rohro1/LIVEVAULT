@@ -187,10 +187,11 @@ async function loadDashboard(quiet = false) {
 
 document.querySelector("#login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const password = new FormData(event.currentTarget).get("password");
+  const form = event.currentTarget;
+  const password = new FormData(form).get("password");
   try {
     await api("/api/login", { method: "POST", body: JSON.stringify({ password }) });
-    event.currentTarget.reset();
+    form.reset();
     await loadDashboard();
   } catch (error) {
     showNotice(error.message, true);
@@ -199,10 +200,11 @@ document.querySelector("#login-form").addEventListener("submit", async (event) =
 
 document.querySelector("#add-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const username = new FormData(event.currentTarget).get("username");
+  const form = event.currentTarget;
+  const username = new FormData(form).get("username");
   try {
     await api("/api/accounts", { method: "POST", body: JSON.stringify({ username }) });
-    event.currentTarget.reset();
+    form.reset();
     await loadDashboard();
     showNotice("Account added.");
   } catch (error) {
