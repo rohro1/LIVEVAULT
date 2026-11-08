@@ -5,6 +5,8 @@ const accountsList = document.querySelector("#accounts");
 const recordingsBody = document.querySelector("#recordings");
 const activityList = document.querySelector("#activity");
 const logoutButton = document.querySelector("#logout");
+const diagnosticLog = document.querySelector("#diagnostic-log");
+const diagnosticConnection = document.querySelector("#diagnostic-connection");
 
 function showNotice(message, error = false) {
   notice.textContent = message;
@@ -69,7 +71,7 @@ function renderAccounts(accounts) {
         ? "Online"
         : account.online === false
           ? "Offline"
-          : "Not checked";
+          : account.checked_at ? "Unknown" : "Not checked";
     const recording = document.createElement("span");
     recording.className = `status-pill ${account.recorder_status === "recording" ? "recording" : ""}`;
     recording.textContent = account.recorder_status === "recording"
@@ -172,15 +174,151 @@ function renderRecordings(recordings) {
   }
 }
 
+function diagnosticLine(container, message, state = "ok", url = "") {
+  const line = document.createElement("div");
+  line.className = state;
+  if (url) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = message;
+    line.append(link);
+  } else {
+    line.textContent = message;
+  }
+  container.append(line);
+}
+
+function renderDiagnostics(data, events) {
+  diagnosticLog.replaceChildren();
+  const timestamp = new Date(data.generated_at).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  diagnosticLine(diagnosticLog, `[${timestamp}] Diagnostics refreshed`);
+  diagnosticLine(diagnosticLog, `[${timestamp}] Cloudflare Pages Function: responding`, "ok");
+
+  if (data.d1.status === "ok") {
+    diagnosticLine(
+      diagnosticLog,
+      `[${timestamp}] D1: connected; ${data.d1.accounts} accounts; ${data.d1.recordings} verified recordings`,
+    );
+    if (data.d1.last_account_check) {
+      const ageMinutes = Math.max(
+        0,
+        Math.floor((Date.now() - new Date(data.d1.last_account_check).getTime()) / 60_000),
+      );
+      diagnosticLine(
+        diagnosticLog,
+        `[${timestamp}] Last account status update: ${ageMinutes} minute(s) ago`,
+        ageMinutes > 10 ? "warn" : "ok",
+      );
+    } else {
+      diagnosticLine(diagnosticLog, `[${timestamp}] No account status check has reached D1 yet`, "warn");
+    }
+  } else {
+    diagnosticLine(
+      diagnosticLog,
+      `[${timestamp}] D1 error: ${data.d1.message || "database unavailable"}`,
+      "error",
+    );
+  }
+
+  const integrations = [
+    ["GitHub PAT", data.integrations.github_pat],
+    ["GitHub repository", data.integrations.github_repository],
+    ["Dashboard ingest token", data.integrations.dashboard_ingest_token],
+    ["Host key secret", data.integrations.host_key_secret],
+    ["Google Drive OAuth", data.integrations.google_drive_credentials],
+  ];
+  for (const [name, configured] of integrations) {
+    diagnosticLine(
+      diagnosticLog,
+      `[${timestamp}] ${name}: ${configured ? "configured" : "MISSING"}`,
+      configured ? "ok" : "error",
+    );
+  }
+  if (data.tracking_sync.status === "synced") {
+    diagnosticLine(
+      diagnosticLog,
+      `[${timestamp}] Tracked accounts: dashboard and GitHub agree (${data.tracking_sync.dashboard_accounts})`,
+    );
+  } else {
+    diagnosticLine(
+      diagnosticLog,
+      `[${timestamp}] Tracked account sync: ${data.tracking_sync.message ||
+        `mismatch (dashboard ${data.tracking_sync.dashboard_accounts}; GitHub ${data.tracking_sync.github_accounts})`}`,
+      data.tracking_sync.status === "not_checked" ? "warn" : "error",
+    );
+  }
+  diagnosticLine(
+    diagnosticLog,
+    `[${timestamp}] Google Drive OAuth credentials are stored in GitHub Actions and cannot be inspected by Cloudflare; a successful recorder run/upload verifies them`,
+    "warn",
+  );
+
+  for (const [name, workflow] of Object.entries(data.workflows)) {
+    if (workflow.status !== "ok") {
+      diagnosticLine(
+        diagnosticLog,
+        `[${timestamp}] ${name} workflow: ${workflow.message || "not checked; GitHub credentials missing"}`,
+        workflow.status === "not_checked" ? "warn" : "error",
+      );
+      continue;
+    }
+    if (!workflow.runs.length) {
+      diagnosticLine(diagnosticLog, `[${timestamp}] ${name} workflow: no runs found`, "warn");
+      continue;
+    }
+    for (const run of workflow.runs) {
+      const outcome = run.status === "completed" ? run.conclusion || "unknown" : run.status;
+      const state = outcome === "success" || outcome === "in_progress" || outcome === "queued"
+        ? "ok"
+        : "error";
+      diagnosticLine(
+        diagnosticLog,
+        `[${new Date(run.updated_at || run.created_at).toLocaleTimeString()}] GitHub ${name}: ${outcome}`,
+        state,
+        run.url,
+      );
+    }
+  }
+
+  for (const event of events.slice(0, 20)) {
+    const time = new Date(event.created_at).toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    diagnosticLine(
+      diagnosticLog,
+      `[${time}] ${event.username ? `${event.username}: ` : ""}${event.message}`,
+      /failed|error|offline/i.test(event.message) ? "warn" : "ok",
+    );
+  }
+  diagnosticLog.scrollTop = 0;
+  const failed = data.d1.status !== "ok" ||
+    Object.values(data.integrations).some((configured) => configured === false) ||
+    data.tracking_sync.status === "mismatch" ||
+    data.tracking_sync.status === "error" ||
+    Object.values(data.workflows).some((workflow) => workflow.status === "error");
+  diagnosticConnection.textContent = failed ? "Issues detected" : "Connected";
+  diagnosticConnection.className = `diagnostic-state ${failed ? "error" : "online"}`;
+}
+
 async function loadDashboard(quiet = false) {
-  const [accounts, recordings, activity] = await Promise.all([
+  const [accounts, recordings, activity, diagnostics] = await Promise.all([
     api("/api/accounts"),
     api("/api/recordings"),
     api("/api/activity"),
+    api("/api/diagnostics"),
   ]);
   renderAccounts(accounts.accounts);
   renderRecordings(recordings.recordings);
   renderActivity(activity.events);
+  renderDiagnostics(diagnostics.diagnostics, activity.events);
   showDashboard();
   if (!quiet) showNotice("");
 }

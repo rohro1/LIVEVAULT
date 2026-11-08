@@ -1,49 +1,34 @@
-import json, os, sys, urllib.parse, urllib.request
+import json
+import os
+import sys
+import urllib.request
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+from tiktok import parse_live_status, request_headers, status_url, stream_candidates
+
 RANK = {"origin": 0, "uhd_60": 1, "uhd": 1, "hd_60": 2, "hd": 2, "sd": 3, "ld": 4, "md": 5}
 
-def get_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+def get_json(username):
+    req = urllib.request.Request(status_url(username), headers=request_headers(username))
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
-
-def candidates(room):
-    out, seen_keys = [], []
-    for key, codec in (("streamData", "h264"), ("hevcStreamData", "hevc")):
-        raw = ((room.get(key) or {}).get("pull_data") or {}).get("stream_data")
-        if not raw:
-            continue
-        try:
-            sd = json.loads(raw) if isinstance(raw, str) else raw
-        except ValueError:
-            continue
-        data = sd.get("data") or {}
-        seen_keys.append((codec, list(sd.keys()), list(data.keys())))
-        for quality, v in data.items():
-            main = (v or {}).get("main") or {}
-            for fmt in ("flv", "hls"):
-                if main.get(fmt):
-                    out.append({"codec": codec, "quality": quality, "fmt": fmt, "url": main[fmt]})
-    return out, seen_keys
 
 def main():
     user, outfile = sys.argv[1].lstrip("@"), sys.argv[2]
     roomfile = sys.argv[3] if len(sys.argv) > 3 else None
     mode = os.environ.get("QUALITY", "compat")
-    encoded_user = urllib.parse.quote(user, safe="")
-    d = get_json(f"https://www.tiktok.com/api-live/user/room/?aid=1988&uniqueId={encoded_user}&sourceType=54")
+    d = get_json(user)
     data = d.get("data") or {}
     user_data = data.get("user") or {}
     status = user_data.get("status")
-    print(f"RESULT: user status={status} (2 means live)")
-    if status != 2:
+    if not parse_live_status(d):
+        print(f"RESULT: user status={status}; no active stream detected")
         print("RESULT: not live, nothing to record")
         sys.exit(2)
+    print(f"RESULT: active stream detected (user status={status})")
     if roomfile:
         with open(roomfile, "w") as f:
             f.write(str(user_data.get("roomId") or ""))
-    cands, seen = candidates(data.get("liveRoom") or {})
+    cands, seen = stream_candidates(data.get("liveRoom") or {})
     print(f"RESULT: stream data layout (key names only): {seen}")
     print(f"RESULT: found {len(cands)} stream options: " +
           ", ".join(f"{c['codec']}/{c['quality']}/{c['fmt']}" for c in cands))
@@ -59,4 +44,5 @@ def main():
     with open(outfile, "w") as f:
         f.write(best["url"])
 
-main()
+if __name__ == "__main__":
+    main()

@@ -1,12 +1,21 @@
 import datetime as dt
+import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 
-from monitor import account_key, in_quiet_hours, parse_accounts
+from monitor import (
+    account_key,
+    check_account,
+    check_accounts,
+    in_quiet_hours,
+    parse_accounts,
+    parse_live_status,
+)
 from record import tracked_user
 
 
@@ -17,6 +26,70 @@ class MonitorTests(unittest.TestCase):
     def test_parse_accounts_rejects_invalid_username(self):
         with self.assertRaises(ValueError):
             parse_accounts("valid,has space")
+
+    def test_parse_live_status_detects_live_and_offline_accounts(self):
+        self.assertTrue(parse_live_status({"data": {"user": {"status": 2}}}))
+        self.assertFalse(parse_live_status({"data": {"user": {"status": 4}}}))
+
+    def test_parse_live_status_accepts_status_three_with_active_stream_data(self):
+        stream_data = {
+            "data": {
+                "origin": {
+                    "main": {"flv": "https://example.test/stream"},
+                },
+            },
+        }
+        response = {
+            "data": {
+                "user": {"status": 3, "roomId": "123"},
+                "liveRoom": {
+                    "status": 3,
+                    "streamData": {
+                        "pull_data": {"stream_data": json.dumps(stream_data)},
+                    },
+                },
+            },
+        }
+        self.assertTrue(parse_live_status(response))
+
+    def test_parse_live_status_rejects_status_three_without_active_stream_data(self):
+        response = {
+            "data": {
+                "user": {"status": 3, "roomId": "123"},
+                "liveRoom": {"status": 3, "streamData": {}},
+            },
+        }
+        self.assertFalse(parse_live_status(response))
+
+    def test_parse_live_status_rejects_unrecognized_responses(self):
+        for response in ({}, {"data": {"user": {}}}, {"data": []}):
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                parse_live_status(response)
+
+    def test_check_accounts_continues_after_an_account_check_fails(self):
+        def check(username):
+            if username == "alice":
+                raise RuntimeError("TikTok unavailable")
+            return True
+
+        with patch("monitor.is_live", side_effect=check):
+            results = check_accounts(["alice", "bob"])
+
+        self.assertIsInstance(results["alice"], RuntimeError)
+        self.assertTrue(results["bob"])
+
+    def test_check_accounts_handles_no_tracked_accounts(self):
+        self.assertEqual(check_accounts([]), {})
+
+    def test_check_account_retries_a_transient_request_failure(self):
+        with patch(
+            "monitor.is_live",
+            side_effect=[RuntimeError("temporary failure"), True],
+        ) as is_live_mock, patch("monitor.time.sleep"):
+            result = check_account("alice")
+
+        self.assertTrue(result)
+        self.assertEqual(is_live_mock.call_count, 2)
 
     def test_account_key_is_stable_and_secret_bound(self):
         self.assertEqual(account_key("alice", "secret"), account_key("alice", "secret"))

@@ -52,9 +52,25 @@ jobs:
       - name: Install FFmpeg
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
       - name: Record and upload verified parts
+        env:
+          HOST_KEY: ${{ inputs.host_key }}
+          FIRST_PART: ${{ inputs.first_part }}
+          STARTED_AT: ${{ inputs.started_at }}
+          SEGMENT_MINUTES: ${{ inputs.segment_minutes }}
         run: >-
           python3 engine/record.py
-          '${{ inputs.host_key }}'
-          '${{ inputs.first_part }}'
-          '${{ inputs.started_at }}'
-          '${{ inputs.segment_minutes }}'
+          "$HOST_KEY"
+          "$FIRST_PART"
+          "$STARTED_AT"
+          "$SEGMENT_MINUTES"
+      - name: Report recorder failure to dashboard
+        if: failure()
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOST_KEY_SECRET: ${{ secrets.HOST_KEY_SECRET }}
+          DASHBOARD_API_URL: ${{ vars.DASHBOARD_API_URL }}
+          DASHBOARD_API_TOKEN: ${{ secrets.DASHBOARD_API_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          HOST_KEY: ${{ inputs.host_key }}
+        run: python3 engine/report_failure.py "$HOST_KEY"

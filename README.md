@@ -1,7 +1,7 @@
 # LIVEVAULT
 
 LIVEVAULT contains a GitHub Actions recording engine and a Cloudflare Pages
-dashboard. The engine checks tracked TikTok accounts every 10 minutes, records
+dashboard. The engine checks tracked TikTok accounts every 5 minutes, records
 host-based live streams, saves numbered 30- or 60-minute MP4 parts to Google
 Drive, and hands long recordings to a new Actions job before the six-hour job
 limit.
@@ -10,7 +10,8 @@ The dashboard code must be deployed and configured before it is reachable.
 A guest-only appearance is not detected or recorded unless the live's host is
 tracked. TikTok endpoints are unofficial and may change; neither detection nor
 uninterrupted recording is guaranteed.
-Scheduled-workflow keep-alive and failure notifications are not implemented yet.
+Scheduled-workflow keep-alive is not implemented. Recorder failures are reported
+to the dashboard when its Actions-to-dashboard integration is configured.
 Recordings and stream URLs are never uploaded to Actions artifacts or releases.
 Review GitHub's current Actions terms before using the repository for continuous
 recording.
@@ -101,11 +102,22 @@ recording jobs recheck the tracked list and quiet-hours setting while running.
 ## Start and verify
 
 After the repository variables and secrets are set, enable GitHub Actions. The
-**Live monitor** workflow is scheduled every 10 minutes (GitHub may delay a
-scheduled start); it can also be started from **Actions → Live monitor → Run
-workflow**. The first detected live host starts a recorder job. Successful
+**Live monitor** workflow is scheduled every 5 minutes, GitHub Actions'
+minimum scheduled interval (GitHub may delay scheduled starts); it can also be
+started from **Actions → Live monitor → Run workflow**. The first detected
+live host starts a recorder job. Successful
 parts are uploaded to the Drive account used for OAuth and deleted from runner
 disk only after Drive confirms the uploaded file ID, name, and size.
+If a TikTok status request fails, that account is shown as unknown/error and
+other tracked accounts are still checked. The recorder is shown as active only
+after FFmpeg produces stream data; startup failures are reported with sanitized
+diagnostics. Failed recorder jobs are marked as errors in the dashboard when
+its API URL and token are configured.
+The dashboard's System diagnostics panel checks Cloudflare/D1 health, required
+integration configuration, tracked-account synchronization, and recent GitHub
+Actions runs. The dashboard must be deployed once after code changes for these
+diagnostics and UI updates to appear; ongoing checks and status refreshes then
+run automatically.
 
 If the repository is public, workflow metadata and logs are public too. Logs
 avoid account names and stream URLs; recorder job names use secret-keyed opaque

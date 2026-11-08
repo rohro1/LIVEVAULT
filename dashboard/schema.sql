@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS dashboard_settings (
 
 CREATE TABLE IF NOT EXISTS account_status (
   username TEXT PRIMARY KEY,
-  online INTEGER,
+  online INTEGER CHECK (online IN (0, 1) OR online IS NULL),
   recorder_status TEXT NOT NULL DEFAULT 'idle',
   checked_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

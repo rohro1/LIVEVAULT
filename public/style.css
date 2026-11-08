@@ -46,6 +46,27 @@ button.danger { background: #482735; color: #ffd9df; }
 .activity-list li { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-top: 1px solid #26314c; font-size: .88rem; }
 .activity-list time { flex: 0 0 auto; color: #8793af; font-size: .78rem; }
 .activity-list .empty-state { color: #9da8c2; }
+.diagnostic-state { color: #9da8c2; font-size: .78rem; }
+.diagnostic-state.online { color: #9af0c1; }
+.diagnostic-state.error { color: #ff9aab; }
+.diagnostic-log {
+  min-height: 180px;
+  max-height: 360px;
+  overflow: auto;
+  margin: 20px 0 0;
+  padding: 16px;
+  border: 1px solid #26314c;
+  border-radius: 10px;
+  background: #080d18;
+  color: #a9b9ff;
+  font: .78rem/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diagnostic-log .ok { color: #9af0c1; }
+.diagnostic-log .warn { color: #ffd58a; }
+.diagnostic-log .error { color: #ff9aab; }
+.diagnostic-log a { color: inherit; }
 .table-wrap { overflow-x: auto; margin-top: 20px; }
 table { width: 100%; border-collapse: collapse; text-align: left; white-space: nowrap; }
 th, td { padding: 12px 10px; border-top: 1px solid #26314c; }

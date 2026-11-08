@@ -340,6 +340,20 @@ def probe_duration(path):
     return duration
 
 
+def capture_has_data(directory):
+    return any(
+        path.is_file() and path.stat().st_size > 0
+        for path in directory.glob("part_*.ts")
+    )
+
+
+def ffmpeg_error_summary(path):
+    details = path.read_text(errors="replace").strip()
+    details = re.sub(r"https?://\S+", "[URL]", details)
+    details = " ".join(details.split())
+    return details[-1000:] or "no diagnostic output"
+
+
 def upload_segments(directory, username, room_id, stamp, next_part, finalized):
     pattern = re.compile(r"part_(\d+)\.ts$")
     segments = sorted(
@@ -391,36 +405,63 @@ def run_capture(
         ]
         stop_reason = None
         last_account_check = 0
+        last_dashboard_update = 0
+        capture_started = False
+        started_wait_deadline = time.monotonic() + 60
         with (directory / "ffmpeg.log").open("w") as log:
             process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=log)
-            while process.poll() is None:
-                now = time.monotonic()
-                if now - last_account_check >= 60:
-                    last_account_check = now
-                    if not refresh_tracked_user(host_key, repo, token, secret):
-                        stop_reason = "untracked"
-                    elif in_quiet_hours(
-                        os.environ.get("QUIET_HOURS_ENABLED", "false"),
-                        os.environ.get("QUIET_START", ""),
-                        os.environ.get("QUIET_END", ""),
-                    ):
-                        stop_reason = "quiet"
-                if stop_reason:
+            try:
+                while process.poll() is None:
+                    now = time.monotonic()
+                    if not capture_started and capture_has_data(directory):
+                        capture_started = True
+                        notify_dashboard_status(
+                            username, True, "recording", "Recording stream"
+                        )
+                        last_dashboard_update = now
+                    elif capture_started and now - last_dashboard_update >= 60:
+                        notify_dashboard_status(
+                            username, True, "recording", "Recording stream"
+                        )
+                        last_dashboard_update = now
+                    elif not capture_started and now >= started_wait_deadline:
+                        raise RuntimeError(
+                            "FFmpeg did not capture stream data within 60 seconds: "
+                            + ffmpeg_error_summary(directory / "ffmpeg.log")
+                        )
+                    if now - last_account_check >= 60:
+                        last_account_check = now
+                        if not refresh_tracked_user(host_key, repo, token, secret):
+                            stop_reason = "untracked"
+                        elif in_quiet_hours(
+                            os.environ.get("QUIET_HOURS_ENABLED", "false"),
+                            os.environ.get("QUIET_START", ""),
+                            os.environ.get("QUIET_END", ""),
+                        ):
+                            stop_reason = "quiet"
+                    if stop_reason:
+                        break
+                    next_part = upload_segments(
+                        directory, username, room_id, stamp, next_part, finalized=False
+                    )
+                    time.sleep(20)
+            finally:
+                if process.poll() is None:
                     process.send_signal(signal.SIGINT)
                     try:
                         process.wait(timeout=30)
                     except subprocess.TimeoutExpired:
                         process.terminate()
                         process.wait(timeout=10)
-                    break
-                next_part = upload_segments(
-                    directory, username, room_id, stamp, next_part, finalized=False
-                )
-                time.sleep(20)
             next_part = upload_segments(
                 directory, username, room_id, stamp, next_part, finalized=True
             )
         if process.returncode not in {0, 255}:
+            if not capture_started:
+                raise RuntimeError(
+                    "FFmpeg exited before capturing stream data: "
+                    + ffmpeg_error_summary(directory / "ffmpeg.log")
+                )
             print("RESULT: stream ended or reset; checking whether it is still live")
         return next_part, stop_reason
 
@@ -500,7 +541,7 @@ def main():
                 return
             stream_url, room_id = resolved
             notify_dashboard_status(
-                username, True, "recording", "Recording stream"
+                username, True, "queued", "Stream found; waiting for recording data"
             )
             next_part, stop_reason = run_capture(
                 stream_url, room_id, username, stamp, segment_minutes, next_part, deadline,

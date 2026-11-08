@@ -1,15 +1,18 @@
 import datetime as dt
+import concurrent.futures
 import hashlib
 import hmac
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from zoneinfo import ZoneInfo
 
+from tiktok import parse_live_status, request_headers, status_url
+
 API = "https://api.github.com"
-TIKTOK = "https://www.tiktok.com/api-live/user/room/?aid=1988&uniqueId={}&sourceType=54"
 USER_AGENT = "LIVEVAULT/1.0"
 ET = ZoneInfo("America/New_York")
 
@@ -109,20 +112,57 @@ def notify_dashboard(username, online, recorder_status, message):
 
 
 def is_live(username):
-    from urllib.parse import quote
-
-    url = TIKTOK.format(quote(username, safe=""))
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    request = urllib.request.Request(status_url(username), headers=request_headers(username))
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             data = json.loads(response.read().decode("utf-8", "replace"))
+    except ValueError:
+        raise RuntimeError("TikTok status response was not valid JSON") from None
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"TikTok status request failed (HTTP {exc.code})") from None
     except urllib.error.URLError as exc:
         raise RuntimeError(f"TikTok status request failed ({exc.reason.__class__.__name__})") from None
     except TimeoutError:
         raise RuntimeError("TikTok status request timed out") from None
-    return ((data.get("data") or {}).get("user") or {}).get("status") == 2
+    try:
+        return parse_live_status(data)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from None
+
+
+def check_accounts(accounts):
+    if not accounts:
+        return {}
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(accounts))) as executor:
+        futures = {executor.submit(check_account, username): username for username in accounts}
+        for future in concurrent.futures.as_completed(futures):
+            username = futures[future]
+            try:
+                results[username] = future.result()
+            except (RuntimeError, ValueError) as exc:
+                results[username] = exc
+    return results
+
+
+def check_account(username):
+    try:
+        return is_live(username)
+    except RuntimeError as first_error:
+        time.sleep(2)
+        try:
+            return is_live(username)
+        except RuntimeError:
+            raise first_error
+
+
+def update_dashboard_status(username, online, recorder_status, message):
+    try:
+        notify_dashboard(username, online, recorder_status, message)
+    except RuntimeError as exc:
+        print(f"WARNING: dashboard status update failed: {exc}")
+        return False
+    return True
 
 
 def main():
@@ -160,46 +200,74 @@ def main():
     started_at = dt.datetime.now(ET).strftime("%Y%m%d_%H%M%S")
     dispatched = 0
     live_count = 0
+    check_failures = 0
+    dispatch_failures = 0
+    dashboard_failures = 0
+    live_results = check_accounts(accounts)
     for username in accounts:
         key = account_key(username, secret)
-        online = is_live(username)
+        online = live_results[username]
+        if isinstance(online, Exception):
+            check_failures += 1
+            print(f"WARNING: live status check failed for a tracked account: {online}")
+            if not update_dashboard_status(
+                username, None, "error", f"Live status check failed: {online}"
+            ):
+                dashboard_failures += 1
+            continue
         if online:
             live_count += 1
         if key in active:
-            state = "recording" if active[key] == "in_progress" else "queued"
+            if active[key] == "in_progress":
+                continue
+            state = "queued"
             message = (
-                "Live; recorder is active" if online and state == "recording"
-                else "Live; recorder is queued" if online
-                else "Offline; active recorder is checking the stream"
+                "Live; recorder is queued" if online
+                else "Offline; queued recorder is checking the stream"
             )
         elif online and not quiet_hours:
-            request_json(
-                f"{API}/repos/{repo}/actions/workflows/record.yml/dispatches",
-                token=token,
-                method="POST",
-                body={
-                    "ref": ref,
-                    "inputs": {
-                        "host_key": key,
-                        "first_part": "1",
-                        "started_at": started_at,
-                        "segment_minutes": segment_minutes,
+            try:
+                request_json(
+                    f"{API}/repos/{repo}/actions/workflows/record.yml/dispatches",
+                    token=token,
+                    method="POST",
+                    body={
+                        "ref": ref,
+                        "inputs": {
+                            "host_key": key,
+                            "first_part": "1",
+                            "started_at": started_at,
+                            "segment_minutes": segment_minutes,
+                        },
                     },
-                },
-            )
-            state = "queued"
-            message = "Live detected; recorder queued"
-            dispatched += 1
+                )
+            except RuntimeError as exc:
+                dispatch_failures += 1
+                print(f"WARNING: recorder dispatch failed for a tracked account: {exc}")
+                if not update_dashboard_status(
+                    username, True, "error", f"Recorder dispatch failed: {exc}"
+                ):
+                    dashboard_failures += 1
+                continue
+            else:
+                state = "queued"
+                message = "Live detected; recorder queued"
+                dispatched += 1
         else:
             state = "idle"
             message = (
                 "Live detected; quiet hours are active" if online
                 else "Account is offline"
             )
-        notify_dashboard(username, online, state, message)
+        if not update_dashboard_status(username, online, state, message):
+            dashboard_failures += 1
     if quiet_hours:
         print("RESULT: quiet hours active; no new recording jobs dispatched")
-    print(f"RESULT: live hosts={live_count}; recording jobs dispatched={dispatched}")
+    print(
+        f"RESULT: live hosts={live_count}; recording jobs dispatched={dispatched}; "
+        f"status check failures={check_failures}; dispatch failures={dispatch_failures}; "
+        f"dashboard update failures={dashboard_failures}"
+    )
 
 
 if __name__ == "__main__":

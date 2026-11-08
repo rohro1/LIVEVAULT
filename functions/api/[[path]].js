@@ -254,6 +254,109 @@ async function accountList(env) {
   }));
 }
 
+async function workflowDiagnostics(env, workflow) {
+  try {
+    const response = await githubRequest(
+      env,
+      `/actions/workflows/${workflow}.yml/runs?per_page=5`,
+    );
+    const result = await response.json();
+    return {
+      status: "ok",
+      runs: (result.workflow_runs || []).map((run) => ({
+        status: run.status,
+        conclusion: run.conclusion,
+        created_at: run.created_at,
+        updated_at: run.updated_at,
+        url: run.html_url,
+      })),
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      message: error instanceof Error ? error.message : "Workflow status request failed",
+      runs: [],
+    };
+  }
+}
+
+async function diagnostics(env) {
+  const result = {
+    generated_at: new Date().toISOString(),
+    cloudflare: { status: "ok" },
+    d1: { status: "unknown" },
+    integrations: {
+      github_pat: Boolean(env.GITHUB_PAT),
+      github_repository: Boolean(env.GITHUB_REPOSITORY),
+      dashboard_ingest_token: Boolean(env.DASHBOARD_API_TOKEN),
+      host_key_secret: Boolean(env.HOST_KEY_SECRET),
+    },
+    tracking_sync: { status: "not_checked" },
+    workflows: {
+      monitor: { status: "not_checked", runs: [] },
+      recorder: { status: "not_checked", runs: [] },
+    },
+  };
+
+  try {
+    const counts = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM accounts) AS accounts,
+         (SELECT COUNT(*) FROM recordings) AS recordings,
+         (SELECT MAX(checked_at) FROM account_status) AS last_account_check`,
+    ).first();
+    result.d1 = {
+      status: "ok",
+      accounts: counts.accounts,
+      recordings: counts.recordings,
+      last_account_check: counts.last_account_check,
+    };
+  } catch (error) {
+    result.d1 = {
+      status: "error",
+      message: error instanceof Error ? error.message : "D1 query failed",
+    };
+  }
+
+  if (env.GITHUB_PAT && env.GITHUB_REPOSITORY) {
+    const [monitor, recorder] = await Promise.all([
+      workflowDiagnostics(env, "monitor"),
+      workflowDiagnostics(env, "record"),
+    ]);
+    result.workflows.monitor = monitor;
+    result.workflows.recorder = recorder;
+    try {
+      const [databaseAccounts, trackedResponse] = await Promise.all([
+        env.DB.prepare("SELECT username FROM accounts WHERE active = 1 ORDER BY username").all(),
+        githubRequest(env, "/actions/variables/TRACKED", "GET", undefined, true),
+      ]);
+      const databaseTracked = (databaseAccounts.results || [])
+        .map((row) => row.username.toLowerCase())
+        .sort();
+      const githubTracked = trackedResponse.status === 404
+        ? []
+        : ((await trackedResponse.json()).value || "")
+          .split(",")
+          .map((username) => username.trim().replace(/^@/, "").toLowerCase())
+          .filter(Boolean)
+          .sort();
+      result.tracking_sync = {
+        status: JSON.stringify(databaseTracked) === JSON.stringify(githubTracked)
+          ? "synced"
+          : "mismatch",
+        dashboard_accounts: databaseTracked.length,
+        github_accounts: githubTracked.length,
+      };
+    } catch (error) {
+      result.tracking_sync = {
+        status: "error",
+        message: error instanceof Error ? error.message : "Tracking sync check failed",
+      };
+    }
+  }
+  return json({ diagnostics: result });
+}
+
 async function internalAuthorized(request, env) {
   if (!env.DASHBOARD_API_TOKEN) throw new HttpError(503, "Dashboard ingest is not configured");
   const supplied = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/, "");
@@ -317,7 +420,7 @@ async function internalStatus(request, env) {
   const username = trackedUsername(body.username);
   const validStatuses = new Set(["queued", "recording", "idle", "error"]);
   if (
-    typeof body.online !== "boolean" ||
+    (typeof body.online !== "boolean" && body.online !== null) ||
     !validStatuses.has(body.recorder_status) ||
     typeof body.message !== "string" ||
     body.message.length > 200
@@ -336,7 +439,7 @@ async function internalStatus(request, env) {
        online = excluded.online,
        recorder_status = excluded.recorder_status,
        checked_at = excluded.checked_at`,
-  ).bind(username, body.online ? 1 : 0, recorderStatus).run();
+  ).bind(username, body.online === null ? null : body.online ? 1 : 0, recorderStatus).run();
   await addActivity(env, username, body.message);
   return json({ ok: true });
 }
@@ -362,6 +465,9 @@ async function handle(request, env) {
     throw new HttpError(401, "Please log in");
   }
 
+  if (path === "/api/diagnostics" && request.method === "GET") {
+    return diagnostics(env);
+  }
   if (path === "/api/accounts" && request.method === "GET") {
     await initializeAccounts(env);
     return json({ accounts: await accountList(env) });
