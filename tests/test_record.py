@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 
 from record import (
     APIError,
+    CaptureStartupError,
     account_key,
     api_request,
     capture_has_data,
@@ -45,6 +46,75 @@ class RecorderTests(unittest.TestCase):
 
             segment.write_bytes(b"stream data")
             self.assertTrue(capture_has_data(directory))
+
+    def test_ffmpeg_startup_failure_is_retryable_and_redacts_stream_url(self):
+        class FailedProcess:
+            returncode = 1
+
+            def poll(self):
+                return self.returncode
+
+        def start_failed_process(command, **_kwargs):
+            (Path(command[-1]).parent / "ffmpeg.log").write_text(
+                "Error opening https://example.test/stream?token=secret: Server returned 5XX"
+            )
+            return FailedProcess()
+
+        with patch("record.subprocess.Popen", side_effect=start_failed_process), patch(
+            "record.time.monotonic", return_value=100
+        ), patch("record.upload_segments", return_value=1), self.assertRaises(
+            CaptureStartupError
+        ) as error:
+            run_capture(
+                "https://example.test/stream?token=secret",
+                "room",
+                "alice",
+                "20261108_120000",
+                30,
+                1,
+                1000,
+                "host-key",
+                "owner/repo",
+                "token",
+                "secret",
+            )
+
+        self.assertIn("Server returned 5XX", str(error.exception))
+        self.assertNotIn("secret", str(error.exception))
+
+    def test_main_resolves_a_fresh_stream_after_ffmpeg_startup_failure(self):
+        environment = {
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_TOKEN": "github-token",
+            "HOST_KEY_SECRET": "host-secret",
+            "GITHUB_REF_NAME": "main",
+            "QUIET_HOURS_ENABLED": "false",
+        }
+        with patch.dict("record.os.environ", environment), patch(
+            "record.sys.argv",
+            ["record.py", "a" * 64, "1", "20261108_120000", "30"],
+        ), patch("record.time.monotonic", side_effect=[
+            100, 100, 100, 100, 100, 345100,
+        ]), patch("record.time.sleep") as sleep, patch(
+            "record.refresh_tracked_user", return_value="alice"
+        ), patch("record.in_quiet_hours", return_value=False), patch(
+            "record.resolve_stream", return_value=("https://example.test/stream", "room")
+        ) as resolve, patch("record.notify_dashboard_status") as notify, patch(
+            "record.run_capture",
+            side_effect=[CaptureStartupError("Server returned 5XX"), (1, None)],
+        ) as capture, patch("record.dispatch_handoff") as handoff:
+            from record import main
+
+            main()
+
+        self.assertEqual(capture.call_count, 2)
+        self.assertEqual(resolve.call_count, 4)
+        self.assertTrue(any(
+            call.args[3] == "Stream connection failed before recording data; retrying shortly"
+            for call in notify.call_args_list
+        ))
+        self.assertTrue(handoff.called)
+        self.assertGreaterEqual(sleep.call_count, 2)
 
     def test_removed_account_is_detected_from_live_dashboard_state(self):
         host_key = account_key("alice", "secret")

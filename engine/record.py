@@ -51,6 +51,10 @@ class APIError(RuntimeError):
         self.status_code = status_code
 
 
+class CaptureStartupError(RuntimeError):
+    pass
+
+
 def api_request(url, method="GET", headers=None, body=None, timeout=60):
     request_headers = {"User-Agent": "LIVEVAULT/1.0"}
     request_headers.update(headers or {})
@@ -521,7 +525,7 @@ def run_capture(
                         )
                         last_dashboard_update = now
                     elif not capture_started and now >= started_wait_deadline:
-                        raise RuntimeError(
+                        raise CaptureStartupError(
                             "FFmpeg did not capture stream data within 60 seconds: "
                             + ffmpeg_error_summary(directory / "ffmpeg.log")
                         )
@@ -566,7 +570,7 @@ def run_capture(
                 raise capture_error
         if process.returncode not in {0, 255}:
             if not capture_started:
-                raise RuntimeError(
+                raise CaptureStartupError(
                     "FFmpeg exited before capturing stream data: "
                     + ffmpeg_error_summary(directory / "ffmpeg.log")
                 )
@@ -651,10 +655,21 @@ def main():
             notify_dashboard_status(
                 username, True, "queued", "Stream found; waiting for recording data"
             )
-            next_part, stop_reason = run_capture(
-                stream_url, room_id, username, stamp, segment_minutes, next_part, deadline,
-                host_key, repo, token, secret,
-            )
+            try:
+                next_part, stop_reason = run_capture(
+                    stream_url, room_id, username, stamp, segment_minutes, next_part, deadline,
+                    host_key, repo, token, secret,
+                )
+            except CaptureStartupError as exc:
+                print(f"WARNING: {exc}")
+                notify_dashboard_status(
+                    username,
+                    True,
+                    "queued",
+                    "Stream connection failed before recording data; retrying shortly",
+                )
+                time.sleep(min(15, max(0, deadline - time.monotonic())))
+                continue
             if stop_reason == "untracked":
                 notify_dashboard_status(
                     username, False, "idle", "Account was removed; recording stopped"
