@@ -245,6 +245,21 @@ class RecorderTests(unittest.TestCase):
             ],
         )
 
+    def test_recording_folder_rechecks_drive_path_for_each_upload(self):
+        with patch(
+            "record.ensure_drive_folder",
+            side_effect=[
+                "root-id", "user-id", "old-date-id",
+                "root-id", "user-id", "canonical-date-id",
+            ],
+        ) as ensure_folder:
+            old_folder = recording_folder_id("alice", "20261108_120000", "token")
+            canonical_folder = recording_folder_id("alice", "20261108_120000", "token")
+
+        self.assertEqual(old_folder, "old-date-id")
+        self.assertEqual(canonical_folder, "canonical-date-id")
+        self.assertEqual(ensure_folder.call_count, 6)
+
     def test_upload_segments_attempts_later_parts_after_one_upload_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)

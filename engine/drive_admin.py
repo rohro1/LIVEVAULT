@@ -12,8 +12,12 @@ import urllib.request
 from record import (
     APIError,
     DRIVE_API,
+    DRIVE_FOLDER_MIME,
     api_request,
+    drive_children,
+    drive_folders,
     recording_folder_id,
+    recording_parent_folder_id,
     refresh_token,
 )
 
@@ -40,7 +44,7 @@ def dashboard_request(path, method="GET", body=None):
 
 def drive_file(file_id, token):
     query = urllib.parse.urlencode({
-        "fields": "id,name,trashed,parents,videoMediaMetadata",
+        "fields": "id,name,mimeType,trashed,parents,videoMediaMetadata",
         "supportsAllDrives": "true",
     })
     url = f"{DRIVE_API}/files/{urllib.parse.quote(file_id, safe='')}?{query}"
@@ -172,11 +176,56 @@ def backfill_durations(token):
     )
 
 
+def trash_empty_folder(folder, name, parent_id, token):
+    folder_id = folder.get("id")
+    if (
+        not isinstance(folder_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", folder_id)
+        or folder.get("name") != name
+        or folder.get("mimeType") != DRIVE_FOLDER_MIME
+        or folder.get("trashed", False)
+        or parent_id not in folder.get("parents", [])
+    ):
+        raise RuntimeError("Refusing to remove an unverified Drive folder")
+    if drive_children(folder_id, token):
+        return False
+    query = urllib.parse.urlencode({
+        "supportsAllDrives": "true",
+        "fields": "id,name,mimeType,parents,trashed",
+    })
+    url = f"{DRIVE_API}/files/{urllib.parse.quote(folder_id, safe='')}?{query}"
+    status, _, raw = api_request(
+        url,
+        method="PATCH",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        body=json.dumps({"trashed": True}).encode(),
+    )
+    if status != 200:
+        raise RuntimeError(f"Google Drive duplicate folder cleanup failed (HTTP {status})")
+    updated = json.loads(raw)
+    if (
+        updated.get("id") != folder_id
+        or updated.get("name") != name
+        or updated.get("mimeType") != DRIVE_FOLDER_MIME
+        or parent_id not in updated.get("parents", [])
+        or updated.get("trashed") is not True
+    ):
+        raise RuntimeError("Google Drive duplicate folder cleanup was not verified")
+    return True
+
+
 def organize_recordings(token):
     moved = 0
     already_organized = 0
     unavailable = 0
     checked = 0
+    duplicate_folders_trashed = 0
+    duplicate_folders_retained = 0
+    target_folders = {}
+    folder_cache = {}
     after = None
     while True:
         path = "/api/internal/recordings/organize"
@@ -218,7 +267,12 @@ def organize_recordings(token):
                 unavailable += 1
                 print("WARNING: a Drive file did not match its dashboard recording")
                 continue
-            destination = recording_folder_id(username, started_at, token)
+            date = f"{started_at[:4]}-{started_at[4:6]}-{started_at[6:8]}"
+            user_folder_id = recording_parent_folder_id(username, token, folder_cache)
+            destination = recording_folder_id(
+                username, started_at, token, folder_cache
+            )
+            target_folders[(username, date)] = (user_folder_id, destination)
             parents = metadata.get("parents", [])
             if destination in parents:
                 already_organized += 1
@@ -254,10 +308,24 @@ def organize_recordings(token):
         if len(recordings) < 200:
             break
         after = recordings[-1]["drive_id"]
+    for (username, date), (user_folder_id, destination) in target_folders.items():
+        for folder in drive_folders(date, user_folder_id, token):
+            if folder.get("id") == destination:
+                continue
+            if trash_empty_folder(folder, date, user_folder_id, token):
+                duplicate_folders_trashed += 1
+            else:
+                duplicate_folders_retained += 1
+                print(
+                    "WARNING: an extra date folder contains items not listed "
+                    "in the LIVEVAULT dashboard; it was left untouched"
+                )
     print(
         "RESULT: Drive organization complete; "
         f"moved={moved}; already_organized={already_organized}; "
-        f"unavailable={unavailable}; checked={checked}"
+        f"unavailable={unavailable}; checked={checked}; "
+        f"duplicate_folders_trashed={duplicate_folders_trashed}; "
+        f"duplicate_folders_retained={duplicate_folders_retained}"
     )
 
 

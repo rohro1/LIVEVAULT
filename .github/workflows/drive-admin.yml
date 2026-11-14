@@ -16,6 +16,9 @@ on:
         type: string
 permissions:
   contents: read
+concurrency:
+  group: livevault-drive-admin
+  cancel-in-progress: false
 jobs:
   drive-admin:
     runs-on: ubuntu-latest

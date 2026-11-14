@@ -123,6 +123,8 @@ dates based on the recording's America/New_York start date. Use **Organize Drive
 folders** in the dashboard to move previously uploaded, dashboard-tracked files
 into the same layout. The job verifies each Drive file against its dashboard
 record before moving it; it does not scan or move unrelated Drive files.
+Duplicate empty date folders are moved to Drive trash after a verified merge;
+folders with untracked contents are retained and reported instead of deleted.
 Recording parts target 30 minutes by default. A part can be shorter if the live
 ends or the stream disconnects; the dashboard displays each uploaded video's
 measured duration so interruptions are visible. Parts are grouped by newest

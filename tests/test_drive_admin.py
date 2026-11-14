@@ -161,6 +161,17 @@ class DriveAdminTests(unittest.TestCase):
             "drive_admin.recording_folder_id",
             return_value="date-folder",
         ), patch(
+            "drive_admin.recording_parent_folder_id",
+            return_value="user-folder",
+        ), patch(
+            "drive_admin.drive_folders",
+            return_value=[{
+                "id": "date-folder",
+                "name": "2026-11-08",
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": ["user-folder"],
+            }],
+        ), patch(
             "drive_admin.api_request",
             return_value=(
                 200,
@@ -201,10 +212,136 @@ class DriveAdminTests(unittest.TestCase):
         ), patch(
             "drive_admin.recording_folder_id",
             return_value="date-folder",
+        ), patch(
+            "drive_admin.recording_parent_folder_id",
+            return_value="user-folder",
+        ), patch(
+            "drive_admin.drive_folders",
+            return_value=[{
+                "id": "date-folder",
+                "name": "2026-11-08",
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": ["user-folder"],
+            }],
         ), patch("drive_admin.api_request") as move_request:
             organize_recordings("access-token")
 
         move_request.assert_not_called()
+
+    def test_organize_trashes_only_empty_duplicate_date_folders(self):
+        recording = {
+            "drive_id": "drive_file_12345",
+            "username": "alice",
+            "started_at": "20261108_120000",
+            "filename": "alice_room_20261108_120000_part001.mp4",
+        }
+        duplicate = {
+            "id": "duplicate-folder",
+            "name": "2026-11-08",
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": ["user-folder"],
+            "createdTime": "2026-11-08T12:00:00Z",
+        }
+        with patch(
+            "drive_admin.dashboard_request",
+            return_value={"recordings": [recording]},
+        ), patch(
+            "drive_admin.drive_file",
+            return_value={
+                "id": recording["drive_id"],
+                "name": recording["filename"],
+                "trashed": False,
+                "parents": ["date-folder"],
+            },
+        ), patch(
+            "drive_admin.recording_folder_id",
+            return_value="date-folder",
+        ), patch(
+            "drive_admin.recording_parent_folder_id",
+            return_value="user-folder",
+        ), patch(
+            "drive_admin.drive_folders",
+            return_value=[
+                {
+                    "id": "date-folder",
+                    "name": "2026-11-08",
+                    "mimeType": "application/vnd.google-apps.folder",
+                    "parents": ["user-folder"],
+                },
+                duplicate,
+            ],
+        ), patch(
+            "drive_admin.drive_children",
+            return_value=[],
+        ), patch(
+            "drive_admin.api_request",
+            return_value=(
+                200,
+                {},
+                json.dumps({
+                    "id": "duplicate-folder",
+                    "name": "2026-11-08",
+                    "mimeType": "application/vnd.google-apps.folder",
+                    "parents": ["user-folder"],
+                    "trashed": True,
+                }).encode(),
+            ),
+        ) as trash_request:
+            organize_recordings("access-token")
+
+        self.assertEqual(trash_request.call_args.kwargs["method"], "PATCH")
+        self.assertEqual(
+            json.loads(trash_request.call_args.kwargs["body"]),
+            {"trashed": True},
+        )
+
+    def test_organize_keeps_duplicate_date_folders_with_untracked_files(self):
+        recording = {
+            "drive_id": "drive_file_12345",
+            "username": "alice",
+            "started_at": "20261108_120000",
+            "filename": "alice_room_20261108_120000_part001.mp4",
+        }
+        with patch(
+            "drive_admin.dashboard_request",
+            return_value={"recordings": [recording]},
+        ), patch(
+            "drive_admin.drive_file",
+            return_value={
+                "id": recording["drive_id"],
+                "name": recording["filename"],
+                "trashed": False,
+                "parents": ["date-folder"],
+            },
+        ), patch(
+            "drive_admin.recording_folder_id",
+            return_value="date-folder",
+        ), patch(
+            "drive_admin.recording_parent_folder_id",
+            return_value="user-folder",
+        ), patch(
+            "drive_admin.drive_folders",
+            return_value=[
+                {
+                    "id": "date-folder",
+                    "name": "2026-11-08",
+                    "mimeType": "application/vnd.google-apps.folder",
+                    "parents": ["user-folder"],
+                },
+                {
+                    "id": "duplicate-folder",
+                    "name": "2026-11-08",
+                    "mimeType": "application/vnd.google-apps.folder",
+                    "parents": ["user-folder"],
+                },
+            ],
+        ), patch(
+            "drive_admin.drive_children",
+            return_value=[{"id": "untracked-file"}],
+        ), patch("drive_admin.api_request") as trash_request:
+            organize_recordings("access-token")
+
+        trash_request.assert_not_called()
 
     def test_delete_requires_drive_metadata_to_match_dashboard_record(self):
         recording = {

@@ -28,7 +28,6 @@ CHUNK_SIZE = 8 * 1024 * 1024
 MAX_RUNTIME_SECONDS = 345 * 60
 ACCOUNT_CHECK_INTERVAL_SECONDS = 5
 _LAST_ACCOUNT_STATE = {}
-_DRIVE_FOLDER_CACHE = {}
 
 
 def _log_account_state(username, active, source):
@@ -176,7 +175,35 @@ def refresh_token():
     return access_token
 
 
-def ensure_drive_folder(name, token, parent_id=None):
+def drive_list_files(query, token):
+    page_token = None
+    files = []
+    while True:
+        parameters = {
+            "q": query,
+            "spaces": "drive",
+            "pageSize": "100",
+            "fields": "nextPageToken,files(id,name,mimeType,parents,createdTime,trashed)",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        }
+        if page_token:
+            parameters["pageToken"] = page_token
+        url = f"{DRIVE_API}/files?{urllib.parse.urlencode(parameters)}"
+        status, _, raw = api_request(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if status != 200:
+            raise RuntimeError(f"Google Drive file lookup failed (HTTP {status})")
+        result = json.loads(raw)
+        files.extend(result.get("files", []))
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            return files
+
+
+def drive_folders(name, parent_id, token):
     if not name or "/" in name or "\\" in name:
         raise ValueError("Invalid Google Drive folder name")
     if parent_id and not re.fullmatch(r"[A-Za-z0-9_-]+", parent_id):
@@ -190,38 +217,24 @@ def ensure_drive_folder(name, token, parent_id=None):
         query += f" and '{parent_id}' in parents"
     else:
         query += " and 'root' in parents"
-    page_token = None
-    folders = []
-    while True:
-        parameters = {
-            "q": query,
-            "spaces": "drive",
-            "pageSize": "100",
-            "fields": "nextPageToken,files(id,name,mimeType,parents,createdTime)",
-            "supportsAllDrives": "true",
-            "includeItemsFromAllDrives": "true",
-        }
-        if page_token:
-            parameters["pageToken"] = page_token
-        url = f"{DRIVE_API}/files?{urllib.parse.urlencode(parameters)}"
-        status, _, raw = api_request(
-            url,
-            headers={"Authorization": f"Bearer {token}"},
+    folders = drive_list_files(query, token)
+    folders.sort(
+        key=lambda folder: (
+            folder.get("createdTime", ""),
+            folder.get("id", ""),
         )
-        if status != 200:
-            raise RuntimeError(f"Google Drive folder lookup failed (HTTP {status})")
-        result = json.loads(raw)
-        folders.extend(result.get("files", []))
-        page_token = result.get("nextPageToken")
-        if not page_token:
-            break
-    if len(folders) > 1:
-        folders.sort(
-            key=lambda folder: (
-                folder.get("createdTime", ""),
-                folder.get("id", ""),
-            )
-        )
+    )
+    return folders
+
+
+def drive_children(parent_id, token):
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", parent_id):
+        raise ValueError("Invalid Google Drive parent folder ID")
+    return drive_list_files(f"'{parent_id}' in parents and trashed = false", token)
+
+
+def ensure_drive_folder(name, token, parent_id=None):
+    folders = drive_folders(name, parent_id, token)
     if folders:
         folder = folders[0]
         if folder.get("name") != name or folder.get("mimeType") != DRIVE_FOLDER_MIME:
@@ -249,33 +262,41 @@ def ensure_drive_folder(name, token, parent_id=None):
         or folder.get("mimeType") != DRIVE_FOLDER_MIME
     ):
         raise RuntimeError("Google Drive did not verify the created folder")
-    return folder["id"]
+    duplicates = drive_folders(name, parent_id, token)
+    return duplicates[0]["id"] if duplicates else folder["id"]
 
 
-def recording_folder_id(username, stamp, token):
+def recording_parent_folder_id(username, token, folder_cache=None):
     if not re.fullmatch(r"[a-z0-9._]{1,24}", username):
         raise ValueError("Invalid TikTok username for Google Drive folder")
+    cache = folder_cache if folder_cache is not None else {}
+    root_id = cache.get(("LIVEVAULT", None))
+    if not root_id:
+        root_id = ensure_drive_folder("LIVEVAULT", token)
+        cache[("LIVEVAULT", None)] = root_id
+    user_key = (username, root_id)
+    user_id = cache.get(user_key)
+    if not user_id:
+        user_id = ensure_drive_folder(username, token, root_id)
+        cache[user_key] = user_id
+    return user_id
+
+
+def recording_folder_id(username, stamp, token, folder_cache=None):
     if not re.fullmatch(r"\d{8}_\d{6}", stamp):
         raise ValueError("Invalid recording timestamp for Google Drive folder")
     try:
         dt.datetime.strptime(stamp, "%Y%m%d_%H%M%S")
     except ValueError:
         raise ValueError("Invalid recording timestamp for Google Drive folder") from None
-    root_id = _DRIVE_FOLDER_CACHE.get(("LIVEVAULT", None))
-    if not root_id:
-        root_id = ensure_drive_folder("LIVEVAULT", token)
-        _DRIVE_FOLDER_CACHE[("LIVEVAULT", None)] = root_id
-    user_key = (username, root_id)
-    user_id = _DRIVE_FOLDER_CACHE.get(user_key)
-    if not user_id:
-        user_id = ensure_drive_folder(username, token, root_id)
-        _DRIVE_FOLDER_CACHE[user_key] = user_id
+    cache = folder_cache if folder_cache is not None else {}
+    user_id = recording_parent_folder_id(username, token, cache)
     date = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
     date_key = (date, user_id)
-    date_id = _DRIVE_FOLDER_CACHE.get(date_key)
+    date_id = cache.get(date_key)
     if not date_id:
         date_id = ensure_drive_folder(date, token, user_id)
-        _DRIVE_FOLDER_CACHE[date_key] = date_id
+        cache[date_key] = date_id
     return date_id
 
 
