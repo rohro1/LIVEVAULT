@@ -9,6 +9,7 @@ const diagnosticLog = document.querySelector("#diagnostic-log");
 const diagnosticConnection = document.querySelector("#diagnostic-connection");
 const checkAllButton = document.querySelector("#check-all");
 const backfillDurationsButton = document.querySelector("#backfill-durations");
+const organizeRecordingsButton = document.querySelector("#organize-recordings");
 const recordingsRefreshButton = document.querySelector("#refresh");
 let cachedDiagnostics = null;
 let diagnosticsFetchedAt = 0;
@@ -615,6 +616,20 @@ backfillDurationsButton.addEventListener("click", async () => {
     showNotice(error.message, true);
   } finally {
     backfillDurationsButton.disabled = false;
+  }
+});
+
+organizeRecordingsButton.addEventListener("click", async () => {
+  organizeRecordingsButton.disabled = true;
+  try {
+    await api("/api/recordings/organize", { method: "POST", body: "{}" });
+    showNotice(
+      "Drive organization queued. Known recordings will be moved into LIVEVAULT / username / date folders; new uploads use that layout automatically.",
+    );
+  } catch (error) {
+    showNotice(error.message, true);
+  } finally {
+    organizeRecordingsButton.disabled = false;
   }
 });
 

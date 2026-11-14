@@ -118,6 +118,11 @@ the 5-minute monitor interval, without delaying recordings for other accounts.
 Successful
 parts are uploaded to the Drive account used for OAuth and deleted from runner
 disk only after Drive confirms the uploaded file ID, name, and size.
+New uploads are placed in `LIVEVAULT/<username>/<YYYY-MM-DD>` folders, with
+dates based on the recording's America/New_York start date. Use **Organize Drive
+folders** in the dashboard to move previously uploaded, dashboard-tracked files
+into the same layout. The job verifies each Drive file against its dashboard
+record before moving it; it does not scan or move unrelated Drive files.
 Recording parts target 30 minutes by default. A part can be shorter if the live
 ends or the stream disconnects; the dashboard displays each uploaded video's
 measured duration so interruptions are visible. Parts are grouped by newest
@@ -159,8 +164,9 @@ cannot be downloaded or probed remain marked unavailable.
 These operations run through the `Manage Drive recordings` GitHub Actions
 workflow so Google OAuth credentials stay in Actions, not Cloudflare Pages.
 
-GitHub scheduled events may be delayed or unavailable. For a Cloudflare Cron
-fallback, create a fine-grained GitHub token limited to this repository with
+Cloudflare Cron dispatches the monitor every five minutes. The monitor workflow
+does not also use GitHub's schedule, avoiding duplicate scans and runner usage.
+Create a fine-grained GitHub token limited to this repository with
 **Actions: read and write** permission. Store it as the separate Worker secret
 `MONITOR_GITHUB_PAT` and deploy the scheduler once:
 

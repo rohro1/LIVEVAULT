@@ -9,6 +9,7 @@ on:
         options:
           - delete
           - backfill-durations
+          - organize
       drive_id:
         description: Verified LIVEVAULT Drive file ID (delete only)
         required: false

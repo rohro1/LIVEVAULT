@@ -9,7 +9,13 @@ import urllib.parse
 import urllib.error
 import urllib.request
 
-from record import APIError, DRIVE_API, api_request, refresh_token
+from record import (
+    APIError,
+    DRIVE_API,
+    api_request,
+    recording_folder_id,
+    refresh_token,
+)
 
 
 def dashboard_request(path, method="GET", body=None):
@@ -34,7 +40,7 @@ def dashboard_request(path, method="GET", body=None):
 
 def drive_file(file_id, token):
     query = urllib.parse.urlencode({
-        "fields": "id,name,trashed,videoMediaMetadata",
+        "fields": "id,name,trashed,parents,videoMediaMetadata",
         "supportsAllDrives": "true",
     })
     url = f"{DRIVE_API}/files/{urllib.parse.quote(file_id, safe='')}?{query}"
@@ -166,6 +172,95 @@ def backfill_durations(token):
     )
 
 
+def organize_recordings(token):
+    moved = 0
+    already_organized = 0
+    unavailable = 0
+    checked = 0
+    after = None
+    while True:
+        path = "/api/internal/recordings/organize"
+        if after:
+            path += "?" + urllib.parse.urlencode({"after": after})
+        recordings = dashboard_request(path).get("recordings", [])
+        if not isinstance(recordings, list):
+            raise RuntimeError("Dashboard returned an invalid recording list")
+        if not recordings:
+            break
+        checked += len(recordings)
+        for recording in recordings:
+            try:
+                file_id = recording["drive_id"]
+                username = recording["username"]
+                started_at = recording["started_at"]
+                filename = recording["filename"]
+                if (
+                    not isinstance(file_id, str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", file_id)
+                    or not isinstance(username, str)
+                    or not isinstance(started_at, str)
+                    or not isinstance(filename, str)
+                    or not filename
+                ):
+                    raise ValueError("Invalid dashboard recording metadata")
+                metadata = drive_file(file_id, token)
+            except APIError as exc:
+                if exc.status_code == 404:
+                    unavailable += 1
+                    print("WARNING: a known Drive recording is no longer available")
+                    continue
+                raise
+            if (
+                metadata.get("id") != file_id
+                or metadata.get("name") != filename
+                or metadata.get("trashed", False)
+            ):
+                unavailable += 1
+                print("WARNING: a Drive file did not match its dashboard recording")
+                continue
+            destination = recording_folder_id(username, started_at, token)
+            parents = metadata.get("parents", [])
+            if destination in parents:
+                already_organized += 1
+                continue
+            parameters = {
+                "addParents": destination,
+                "supportsAllDrives": "true",
+                "fields": "id,name,parents,trashed",
+            }
+            old_parents = [parent for parent in parents if parent != destination]
+            if old_parents:
+                parameters["removeParents"] = ",".join(old_parents)
+            url = (
+                f"{DRIVE_API}/files/{urllib.parse.quote(file_id, safe='')}?"
+                f"{urllib.parse.urlencode(parameters)}"
+            )
+            status, _, raw = api_request(
+                url,
+                method="PATCH",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if status != 200:
+                raise RuntimeError(f"Google Drive move failed (HTTP {status})")
+            updated = json.loads(raw)
+            if (
+                updated.get("id") != file_id
+                or updated.get("name") != filename
+                or updated.get("trashed", False)
+                or destination not in updated.get("parents", [])
+            ):
+                raise RuntimeError("Google Drive move did not pass verification")
+            moved += 1
+        if len(recordings) < 200:
+            break
+        after = recordings[-1]["drive_id"]
+    print(
+        "RESULT: Drive organization complete; "
+        f"moved={moved}; already_organized={already_organized}; "
+        f"unavailable={unavailable}; checked={checked}"
+    )
+
+
 def delete_recording(file_id, token):
     if not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", file_id):
         raise ValueError("Invalid Google Drive file ID")
@@ -205,6 +300,8 @@ def main():
     token = refresh_token()
     if action == "backfill-durations" and not drive_id:
         backfill_durations(token)
+    elif action == "organize" and not drive_id:
+        organize_recordings(token)
     elif action == "delete" and drive_id:
         delete_recording(drive_id, token)
     else:

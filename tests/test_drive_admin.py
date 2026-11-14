@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import sys
 import unittest
@@ -13,6 +14,7 @@ from drive_admin import (
     dashboard_request,
     delete_recording,
     drive_file,
+    organize_recordings,
     probe_drive_duration,
 )
 
@@ -133,6 +135,76 @@ class DriveAdminTests(unittest.TestCase):
                 {"duration_seconds": 302.456},
             ),
         )
+
+    def test_organize_moves_only_verified_dashboard_recordings_to_date_folder(self):
+        recording = {
+            "drive_id": "drive_file_12345",
+            "username": "alice",
+            "started_at": "20261108_120000",
+            "filename": "alice_room_20261108_120000_part001.mp4",
+        }
+        with patch(
+            "drive_admin.dashboard_request",
+            side_effect=[
+                {"recordings": [recording]},
+                {"recordings": []},
+            ],
+        ), patch(
+            "drive_admin.drive_file",
+            return_value={
+                "id": recording["drive_id"],
+                "name": recording["filename"],
+                "trashed": False,
+                "parents": ["old-folder"],
+            },
+        ), patch(
+            "drive_admin.recording_folder_id",
+            return_value="date-folder",
+        ), patch(
+            "drive_admin.api_request",
+            return_value=(
+                200,
+                {},
+                json.dumps({
+                    "id": recording["drive_id"],
+                    "name": recording["filename"],
+                    "parents": ["date-folder"],
+                    "trashed": False,
+                }).encode(),
+            ),
+        ) as move_request:
+            organize_recordings("access-token")
+
+        move_url = move_request.call_args.args[0]
+        self.assertIn("addParents=date-folder", move_url)
+        self.assertIn("removeParents=old-folder", move_url)
+        self.assertEqual(move_request.call_args.kwargs["method"], "PATCH")
+
+    def test_organize_skips_files_already_in_their_destination_folder(self):
+        recording = {
+            "drive_id": "drive_file_12345",
+            "username": "alice",
+            "started_at": "20261108_120000",
+            "filename": "alice_room_20261108_120000_part001.mp4",
+        }
+        with patch(
+            "drive_admin.dashboard_request",
+            return_value={"recordings": [recording]},
+        ), patch(
+            "drive_admin.drive_file",
+            return_value={
+                "id": recording["drive_id"],
+                "name": recording["filename"],
+                "trashed": False,
+                "parents": ["date-folder"],
+            },
+        ), patch(
+            "drive_admin.recording_folder_id",
+            return_value="date-folder",
+        ), patch("drive_admin.api_request") as move_request:
+            organize_recordings("access-token")
+
+        move_request.assert_not_called()
 
     def test_delete_requires_drive_metadata_to_match_dashboard_record(self):
         recording = {

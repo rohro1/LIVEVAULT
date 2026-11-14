@@ -554,6 +554,23 @@ async function handle(request, env) {
     ).bind(username).first();
     return json({ active: account?.active === 1 });
   }
+  if (path === "/api/internal/recordings/organize" && request.method === "GET") {
+    await internalAuthorized(request, env);
+    const after = new URL(request.url).searchParams.get("after");
+    const rows = after
+      ? await env.DB.prepare(
+        `SELECT drive_id, username, started_at, filename
+         FROM recordings
+         WHERE drive_id > ?
+         ORDER BY drive_id ASC LIMIT 200`,
+      ).bind(after).all()
+      : await env.DB.prepare(
+        `SELECT drive_id, username, started_at, filename
+         FROM recordings
+         ORDER BY drive_id ASC LIMIT 200`,
+      ).all();
+    return json({ recordings: rows.results || [] });
+  }
   if (path === "/api/internal/recordings/missing-duration" && request.method === "GET") {
     await internalAuthorized(request, env);
     const after = new URL(request.url).searchParams.get("after");
@@ -755,6 +772,11 @@ async function handle(request, env) {
   if (path === "/api/recordings/backfill-duration" && request.method === "POST") {
     requireSameOrigin(request);
     await dispatchDriveMaintenance(env, "backfill-durations");
+    return json({ ok: true, queued: true }, 202);
+  }
+  if (path === "/api/recordings/organize" && request.method === "POST") {
+    requireSameOrigin(request);
+    await dispatchDriveMaintenance(env, "organize");
     return json({ ok: true, queued: true }, 202);
   }
   if (path.startsWith("/api/recordings/") && request.method === "DELETE") {

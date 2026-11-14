@@ -105,6 +105,21 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
                 .slice(0, 200),
             };
           }
+          if (sql.includes("SELECT drive_id, username, started_at, filename")) {
+            let rows = [...recordings.values()]
+              .sort((a, b) => a.drive_id.localeCompare(b.drive_id));
+            if (sql.includes("drive_id > ?")) {
+              rows = rows.filter((recording) => recording.drive_id > values[0]);
+            }
+            return {
+              results: rows.slice(0, 200).map(({
+                drive_id,
+                username,
+                started_at,
+                filename,
+              }) => ({ drive_id, username, started_at, filename })),
+            };
+          }
           if (sql.includes("duration_seconds IS NULL")) {
             let missing = [...recordings.values()]
               .filter((recording) => recording.duration_seconds == null ||
@@ -267,11 +282,37 @@ async function backfillDurations(env) {
   });
 }
 
+async function organizeRecordings(env) {
+  return onRequest({
+    request: new Request("https://livevault.example/api/recordings/organize", {
+      method: "POST",
+      headers: {
+        Cookie: await sessionCookie(),
+        Origin: "https://livevault.example",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    }),
+    env,
+  });
+}
+
 async function listRecordings(env) {
   return onRequest({
     request: new Request("https://livevault.example/api/recordings", {
       headers: { Cookie: await sessionCookie() },
     }),
+    env,
+  });
+}
+
+async function listRecordingsToOrganize(env, after) {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return onRequest({
+    request: new Request(
+      `https://livevault.example/api/internal/recordings/organize${query}`,
+      { headers: { Authorization: "Bearer dashboard-token" } },
+    ),
     env,
   });
 }
@@ -584,6 +625,28 @@ test("duration backfill queues a Drive maintenance workflow", async () => {
   }
 });
 
+test("Drive organization queues a Drive maintenance workflow", async () => {
+  const originalFetch = globalThis.fetch;
+  let dispatchBody;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).endsWith("/actions/workflows/drive-admin.yml/dispatches")) {
+      dispatchBody = JSON.parse(options.body);
+    }
+    return new Response(null, { status: 204 });
+  };
+
+  try {
+    const response = await organizeRecordings(createEnvironment(createDatabase()));
+    assert.equal(response.status, 202);
+    assert.deepEqual(dispatchBody, {
+      ref: "main",
+      inputs: { action: "organize" },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("recordings report missing durations across the full Drive history", async () => {
   const recordings = Array.from({ length: 201 }, (_, index) => ({
     drive_id: `drive_file_${String(index).padStart(5, "0")}`,
@@ -626,6 +689,34 @@ test("missing-duration endpoint supports paging beyond 200 Drive files", async (
   assert.equal(firstPage.recordings.length, 200);
   assert.equal(secondResponse.status, 200);
   assert.equal(secondPage.recordings.length, 5);
+});
+
+test("recording organization endpoint pages through all known Drive files", async () => {
+  const recordings = Array.from({ length: 205 }, (_, index) => ({
+    drive_id: `drive_file_${String(index).padStart(5, "0")}`,
+    username: "alice",
+    started_at: `20261108_${String(index).padStart(6, "0")}`,
+    filename: `alice_part${index}.mp4`,
+  }));
+  const env = createEnvironment(createDatabase([], recordings));
+  const firstResponse = await listRecordingsToOrganize(env);
+  const firstPage = await firstResponse.json();
+  const secondResponse = await listRecordingsToOrganize(
+    env,
+    firstPage.recordings.at(-1).drive_id,
+  );
+  const secondPage = await secondResponse.json();
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(firstPage.recordings.length, 200);
+  assert.equal(secondResponse.status, 200);
+  assert.equal(secondPage.recordings.length, 5);
+  assert.deepEqual(Object.keys(firstPage.recordings[0]).sort(), [
+    "drive_id",
+    "filename",
+    "started_at",
+    "username",
+  ]);
 });
 
 test("recording deletion rejects file IDs not present in the dashboard", async () => {

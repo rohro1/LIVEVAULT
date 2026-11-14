@@ -1,8 +1,9 @@
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine"))
 
@@ -14,6 +15,7 @@ from record import (
     capture_has_data,
     drive_upload,
     ffmpeg_error_summary,
+    recording_folder_id,
     refresh_tracked_user,
     resolve_stream,
     run_capture,
@@ -207,16 +209,41 @@ class RecorderTests(unittest.TestCase):
                 (200, {}, (
                     b'{"id":"drive-id","name":"part.mp4","size":"14",'
                     b'"webViewLink":"https://drive.google.com/file/d/drive-id/view",'
-                    b'"trashed":false}'
+                    b'"trashed":false,"parents":["folder-id"]}'
                 )),
             ]
             with patch("record.refresh_token", return_value="access-token"), patch(
+                "record.recording_folder_id", return_value="folder-id"
+            ), patch(
                 "record.api_request", side_effect=responses
             ) as request, patch("record.time.sleep"):
-                verified = drive_upload(path, "part.mp4")
+                verified = drive_upload(
+                    path, "part.mp4", "alice", "20261108_120000"
+                )
 
         self.assertEqual(verified["id"], "drive-id")
         self.assertEqual(request.call_count, 5)
+        self.assertEqual(
+            json.loads(request.call_args_list[0].kwargs["body"])["parents"],
+            ["folder-id"],
+        )
+
+    def test_recording_folder_uses_livevault_username_and_new_york_date_names(self):
+        with patch(
+            "record.ensure_drive_folder",
+            side_effect=["root-id", "user-id", "date-id"],
+        ) as ensure_folder:
+            folder_id = recording_folder_id("alice", "20261108_120000", "token")
+
+        self.assertEqual(folder_id, "date-id")
+        self.assertEqual(
+            ensure_folder.call_args_list,
+            [
+                call("LIVEVAULT", "token"),
+                call("alice", "token", "root-id"),
+                call("2026-11-08", "token", "user-id"),
+            ],
+        )
 
     def test_upload_segments_attempts_later_parts_after_one_upload_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
