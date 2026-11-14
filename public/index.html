@@ -87,7 +87,8 @@
             <output id="recording-count" aria-live="polite"></output>
           </form>
           <div class="table-wrap">
-            <table>
+            <div class="recordings-table-content">
+              <table>
               <thead>
                 <tr>
                   <th>Account</th>
@@ -107,50 +108,59 @@
                     </select>
                   </th>
                   <th>
-                    <label class="sr-only" for="recording-filter-started-from">Started from</label>
-                    <input id="recording-filter-started-from" form="recording-filter-form" name="started_from" data-recording-filter type="date" title="Started from">
-                    <label class="sr-only" for="recording-filter-started-to">Started through</label>
-                    <input id="recording-filter-started-to" form="recording-filter-form" name="started_to" data-recording-filter type="date" title="Started through">
+                    <div class="recording-filter-range">
+                      <label for="recording-filter-started-from">From</label>
+                      <input id="recording-filter-started-from" form="recording-filter-form" name="started_from" data-recording-filter type="date" title="Started from">
+                      <label for="recording-filter-started-to">To</label>
+                      <input id="recording-filter-started-to" form="recording-filter-form" name="started_to" data-recording-filter type="date" title="Started through">
+                    </div>
                   </th>
                   <th>
-                    <label class="sr-only" for="recording-filter-uploaded-from">Uploaded from</label>
-                    <input id="recording-filter-uploaded-from" form="recording-filter-form" name="uploaded_from" data-recording-filter type="date" title="Uploaded from">
-                    <label class="sr-only" for="recording-filter-uploaded-to">Uploaded through</label>
-                    <input id="recording-filter-uploaded-to" form="recording-filter-form" name="uploaded_to" data-recording-filter type="date" title="Uploaded through">
+                    <div class="recording-filter-range">
+                      <label for="recording-filter-uploaded-from">From</label>
+                      <input id="recording-filter-uploaded-from" form="recording-filter-form" name="uploaded_from" data-recording-filter type="date" title="Uploaded from">
+                      <label for="recording-filter-uploaded-to">To</label>
+                      <input id="recording-filter-uploaded-to" form="recording-filter-form" name="uploaded_to" data-recording-filter type="date" title="Uploaded through">
+                    </div>
                   </th>
                   <th>
                     <label class="sr-only" for="recording-filter-part">Part number</label>
                     <input id="recording-filter-part" form="recording-filter-form" name="part" data-recording-filter type="number" min="1" step="1" placeholder="Part #">
                   </th>
                   <th>
-                    <label class="sr-only" for="recording-filter-size-min">Minimum size in MB</label>
-                    <input id="recording-filter-size-min" form="recording-filter-form" name="size_min" data-recording-filter type="number" min="0" step="0.1" placeholder="Min MB">
-                    <label class="sr-only" for="recording-filter-size-max">Maximum size in MB</label>
-                    <input id="recording-filter-size-max" form="recording-filter-form" name="size_max" data-recording-filter type="number" min="0" step="0.1" placeholder="Max MB">
+                    <div class="recording-filter-range">
+                      <label for="recording-filter-size-min">Min MB</label>
+                      <input id="recording-filter-size-min" form="recording-filter-form" name="size_min" data-recording-filter type="number" min="0" step="0.1">
+                      <label for="recording-filter-size-max">Max MB</label>
+                      <input id="recording-filter-size-max" form="recording-filter-form" name="size_max" data-recording-filter type="number" min="0" step="0.1">
+                    </div>
                   </th>
                   <th>
                     <label class="sr-only" for="recording-filter-drive">Filter by file name or Drive ID</label>
                     <input id="recording-filter-drive" form="recording-filter-form" name="drive" data-recording-filter type="search" maxlength="100" placeholder="File name / ID">
                   </th>
                   <th>
-                    <label class="sr-only" for="recording-filter-duration-min">Minimum duration in minutes</label>
-                    <input id="recording-filter-duration-min" form="recording-filter-form" name="duration_min" data-recording-filter type="number" min="0" step="0.1" placeholder="Min min">
-                    <label class="sr-only" for="recording-filter-duration-max">Maximum duration in minutes</label>
-                    <input id="recording-filter-duration-max" form="recording-filter-form" name="duration_max" data-recording-filter type="number" min="0" step="0.1" placeholder="Max min">
+                    <div class="recording-filter-range">
+                      <label for="recording-filter-duration-min">Min min</label>
+                      <input id="recording-filter-duration-min" form="recording-filter-form" name="duration_min" data-recording-filter type="number" min="0" step="0.1">
+                      <label for="recording-filter-duration-max">Max min</label>
+                      <input id="recording-filter-duration-max" form="recording-filter-form" name="duration_max" data-recording-filter type="number" min="0" step="0.1">
+                    </div>
                   </th>
                   <th aria-label="No filter"></th>
                 </tr>
               </thead>
               <tbody id="recordings"></tbody>
-            </table>
+              </table>
+              <nav id="recordings-pagination" class="recordings-pagination" aria-label="Recording pages">
+                <button class="secondary" data-page-action="first" type="button">First</button>
+                <button class="secondary" data-page-action="previous" type="button">Previous</button>
+                <span id="recordings-page" aria-live="polite"></span>
+                <button class="secondary" data-page-action="next" type="button">Next</button>
+                <button class="secondary" data-page-action="last" type="button">Last</button>
+              </nav>
+            </div>
           </div>
-          <nav id="recordings-pagination" class="recordings-pagination" aria-label="Recording pages">
-            <button class="secondary" data-page-action="first" type="button">First</button>
-            <button class="secondary" data-page-action="previous" type="button">Previous</button>
-            <span id="recordings-page" aria-live="polite"></span>
-            <button class="secondary" data-page-action="next" type="button">Next</button>
-            <button class="secondary" data-page-action="last" type="button">Last</button>
-          </nav>
         </section>
 
         <section class="panel diagnostics-panel">
