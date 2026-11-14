@@ -103,6 +103,195 @@ function trackedUsername(value) {
   return username;
 }
 
+function validDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function newYorkDateBoundary(value) {
+  const target = Date.parse(`${value}T00:00:00.000Z`);
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  let candidate = target;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const parts = Object.fromEntries(
+      formatter.formatToParts(new Date(candidate)).map(({ type, value: part }) => [type, part]),
+    );
+    const represented = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+      Number(parts.second),
+    );
+    const correction = target - represented;
+    candidate += correction;
+    if (!correction) break;
+  }
+  return new Date(candidate).toISOString();
+}
+
+function recordingFilters(searchParams) {
+  const clauses = [];
+  const bindings = [];
+  const account = searchParams.get("account") || "";
+  if (account) {
+    clauses.push("username = ?");
+    bindings.push(trackedUsername(account));
+  }
+
+  const startedFrom = searchParams.get("started_from") || "";
+  const startedTo = searchParams.get("started_to") || "";
+  const uploadedFrom = searchParams.get("uploaded_from") || "";
+  const uploadedTo = searchParams.get("uploaded_to") || "";
+  for (const [label, value] of [
+    ["Started", startedFrom],
+    ["Started", startedTo],
+    ["Uploaded", uploadedFrom],
+    ["Uploaded", uploadedTo],
+  ]) {
+    if (value && !validDate(value)) {
+      throw new HttpError(400, `${label} date filter is invalid`);
+    }
+  }
+  if (startedFrom && startedTo && startedFrom > startedTo) {
+    throw new HttpError(400, "Started date range is reversed");
+  }
+  if (uploadedFrom && uploadedTo && uploadedFrom > uploadedTo) {
+    throw new HttpError(400, "Uploaded date range is reversed");
+  }
+  if (startedFrom) {
+    clauses.push("substr(started_at, 1, 8) >= ?");
+    bindings.push(startedFrom.replaceAll("-", ""));
+  }
+  if (startedTo) {
+    clauses.push("substr(started_at, 1, 8) <= ?");
+    bindings.push(startedTo.replaceAll("-", ""));
+  }
+  if (uploadedFrom) {
+    clauses.push("created_at >= ?");
+    bindings.push(newYorkDateBoundary(uploadedFrom));
+  }
+  if (uploadedTo) {
+    const followingDate = new Date(
+      Date.parse(`${uploadedTo}T00:00:00.000Z`) + 24 * 60 * 60 * 1000,
+    ).toISOString().slice(0, 10);
+    clauses.push("created_at < ?");
+    bindings.push(newYorkDateBoundary(followingDate));
+  }
+
+  const part = searchParams.get("part") || "";
+  if (part) {
+    if (!/^\d{1,6}$/.test(part) || Number(part) < 1) {
+      throw new HttpError(400, "Part filter must be a positive number");
+    }
+    clauses.push("part_number = ?");
+    bindings.push(Number(part));
+  }
+
+  function metric(name, label, factor, maximum) {
+    const raw = searchParams.get(name) || "";
+    if (!raw) return null;
+    if (!/^(?:\d+(?:\.\d{1,3})?|\.\d{1,3})$/.test(raw)) {
+      throw new HttpError(400, `${label} filter must be a non-negative number`);
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value > maximum) {
+      throw new HttpError(400, `${label} filter is outside the supported range`);
+    }
+    return value * factor;
+  }
+
+  const minSize = metric("size_min", "Minimum size", 1024 * 1024, 1_000_000);
+  const maxSize = metric("size_max", "Maximum size", 1024 * 1024, 1_000_000);
+  if (minSize !== null && maxSize !== null && minSize > maxSize) {
+    throw new HttpError(400, "File size range is reversed");
+  }
+  if (minSize !== null) {
+    clauses.push("file_size >= ?");
+    bindings.push(minSize);
+  }
+  if (maxSize !== null) {
+    clauses.push("file_size <= ?");
+    bindings.push(maxSize);
+  }
+
+  const drive = (searchParams.get("drive") || "").trim();
+  if (drive.length > 100) throw new HttpError(400, "Drive filter is too long");
+  if (drive) {
+    clauses.push("(instr(lower(filename), lower(?)) > 0 OR instr(lower(drive_id), lower(?)) > 0)");
+    bindings.push(drive, drive);
+  }
+
+  const minDuration = metric("duration_min", "Minimum duration", 60, 100_000);
+  const maxDuration = metric("duration_max", "Maximum duration", 60, 100_000);
+  if (minDuration !== null && maxDuration !== null && minDuration > maxDuration) {
+    throw new HttpError(400, "Duration range is reversed");
+  }
+  if (minDuration !== null) {
+    clauses.push("duration_seconds >= ?");
+    bindings.push(minDuration);
+  }
+  if (maxDuration !== null) {
+    clauses.push("duration_seconds <= ?");
+    bindings.push(maxDuration);
+  }
+
+  const search = (searchParams.get("search") || "").trim();
+  if (search.length > 100) throw new HttpError(400, "Search filter is too long");
+  if (search) {
+    const searchableColumns = [
+      "username",
+      "room_id",
+      "started_at",
+      "created_at",
+      "part_number",
+      "filename",
+      "drive_id",
+      "file_size",
+      "duration_seconds",
+    ];
+    clauses.push(`(${searchableColumns
+      .map((column) => `instr(lower(CAST(COALESCE(${column}, '') AS TEXT)), lower(?)) > 0`)
+      .join(" OR ")})`);
+    bindings.push(...searchableColumns.map(() => search));
+  }
+
+  const sort = searchParams.get("sort") || "uploaded_desc";
+  const sortExpressions = {
+    started_desc: "started_at DESC, username ASC, part_number ASC, drive_id DESC",
+    started_asc: "started_at ASC, username ASC, part_number ASC, drive_id ASC",
+    uploaded_desc: "created_at DESC, drive_id DESC",
+    uploaded_asc: "created_at ASC, drive_id ASC",
+  };
+  if (!Object.hasOwn(sortExpressions, sort)) {
+    throw new HttpError(400, "Recording sort order is invalid");
+  }
+
+  const rawPage = searchParams.get("page") || "1";
+  if (!/^\d+$/.test(rawPage) || !Number.isSafeInteger(Number(rawPage)) ||
+      Number(rawPage) < 1 || Number(rawPage) > 1_000_000) {
+    throw new HttpError(400, "Recording page number is invalid");
+  }
+
+  return {
+    where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "",
+    bindings,
+    sortExpression: sortExpressions[sort],
+    requestedPage: Number(rawPage),
+  };
+}
+
 async function hmacHex(value, secret) {
   const signature = await crypto.subtle.sign(
     "HMAC",
@@ -753,19 +942,36 @@ async function handle(request, env) {
     return json({ ok: true });
   }
   if (path === "/api/recordings" && request.method === "GET") {
+    const filters = recordingFilters(new URL(request.url).searchParams);
+    const [totalResult, missingDurations, usernamesResult] = await Promise.all([
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM recordings ${filters.where}`,
+      ).bind(...filters.bindings).first(),
+      env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM recordings WHERE duration_seconds IS NULL OR duration_seconds <= 0",
+      ).first(),
+      env.DB.prepare(
+        "SELECT DISTINCT username FROM recordings ORDER BY username COLLATE NOCASE",
+      ).all(),
+    ]);
+    const total = Number(totalResult?.count || 0);
+    const pageSize = 15;
+    const pages = Math.ceil(total / pageSize);
+    const page = Math.min(filters.requestedPage, Math.max(1, pages));
     const rows = await env.DB.prepare(
       `SELECT drive_id, username, room_id, started_at, part_number, filename, drive_url, file_size,
               duration_seconds, created_at
-       FROM recordings
-       ORDER BY started_at DESC, username ASC, part_number ASC, created_at ASC
-       LIMIT 200`,
-    ).all();
-    const missingDurations = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM recordings WHERE duration_seconds IS NULL OR duration_seconds <= 0",
-    ).first();
-    const recordings = rows.results || [];
+       FROM recordings ${filters.where}
+       ORDER BY ${filters.sortExpression}
+       LIMIT ? OFFSET ?`,
+    ).bind(...filters.bindings, pageSize, (page - 1) * pageSize).all();
     return json({
-      recordings,
+      recordings: rows.results || [],
+      total,
+      page,
+      page_size: pageSize,
+      pages,
+      usernames: (usernamesResult.results || []).map((row) => row.username),
       missing_durations: Number(missingDurations?.count || 0),
     });
   }

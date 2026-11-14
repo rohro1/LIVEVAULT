@@ -61,7 +61,7 @@
           <div class="section-title">
             <div>
               <h2>Recordings</h2>
-              <p>Latest 200 verified Google Drive uploads. Checks are limited to one manual scan per minute.</p>
+              <p>Browse all verified Drive uploads 15 at a time. Combine column filters, search all fields, and sort by start or upload date.</p>
             </div>
             <div class="row-actions">
               <button id="organize-recordings" class="secondary" type="button">Organize Drive folders</button>
@@ -69,14 +69,88 @@
               <button id="refresh" class="secondary" type="button">Refresh recordings</button>
             </div>
           </div>
+          <form id="recording-filter-form" class="recording-toolbar">
+            <label>
+              Search all columns
+              <input name="search" data-recording-filter type="search" maxlength="100" placeholder="Search recordings">
+            </label>
+            <label>
+              Sort by
+              <select name="sort" data-recording-filter>
+                <option value="uploaded_desc">Uploaded: newest first</option>
+                <option value="uploaded_asc">Uploaded: oldest first</option>
+                <option value="started_desc">Started: newest first</option>
+                <option value="started_asc">Started: oldest first</option>
+              </select>
+            </label>
+            <button id="clear-recording-filters" class="secondary" type="button">Clear filters</button>
+            <output id="recording-count" aria-live="polite"></output>
+          </form>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>Account</th><th>Started (New York)</th><th>Part</th><th>Size</th><th>Drive</th><th>Duration</th><th>Actions</th></tr>
+                <tr>
+                  <th>Account</th>
+                  <th>Started (New York)</th>
+                  <th>Uploaded (New York)</th>
+                  <th>Part</th>
+                  <th>Size</th>
+                  <th>Drive file</th>
+                  <th>Duration</th>
+                  <th>Actions</th>
+                </tr>
+                <tr class="recording-filter-row">
+                  <th>
+                    <label class="sr-only" for="recording-filter-account">Filter by account</label>
+                    <select id="recording-filter-account" form="recording-filter-form" name="account" data-recording-filter>
+                      <option value="">All accounts</option>
+                    </select>
+                  </th>
+                  <th>
+                    <label class="sr-only" for="recording-filter-started-from">Started from</label>
+                    <input id="recording-filter-started-from" form="recording-filter-form" name="started_from" data-recording-filter type="date" title="Started from">
+                    <label class="sr-only" for="recording-filter-started-to">Started through</label>
+                    <input id="recording-filter-started-to" form="recording-filter-form" name="started_to" data-recording-filter type="date" title="Started through">
+                  </th>
+                  <th>
+                    <label class="sr-only" for="recording-filter-uploaded-from">Uploaded from</label>
+                    <input id="recording-filter-uploaded-from" form="recording-filter-form" name="uploaded_from" data-recording-filter type="date" title="Uploaded from">
+                    <label class="sr-only" for="recording-filter-uploaded-to">Uploaded through</label>
+                    <input id="recording-filter-uploaded-to" form="recording-filter-form" name="uploaded_to" data-recording-filter type="date" title="Uploaded through">
+                  </th>
+                  <th>
+                    <label class="sr-only" for="recording-filter-part">Part number</label>
+                    <input id="recording-filter-part" form="recording-filter-form" name="part" data-recording-filter type="number" min="1" step="1" placeholder="Part #">
+                  </th>
+                  <th>
+                    <label class="sr-only" for="recording-filter-size-min">Minimum size in MB</label>
+                    <input id="recording-filter-size-min" form="recording-filter-form" name="size_min" data-recording-filter type="number" min="0" step="0.1" placeholder="Min MB">
+                    <label class="sr-only" for="recording-filter-size-max">Maximum size in MB</label>
+                    <input id="recording-filter-size-max" form="recording-filter-form" name="size_max" data-recording-filter type="number" min="0" step="0.1" placeholder="Max MB">
+                  </th>
+                  <th>
+                    <label class="sr-only" for="recording-filter-drive">Filter by file name or Drive ID</label>
+                    <input id="recording-filter-drive" form="recording-filter-form" name="drive" data-recording-filter type="search" maxlength="100" placeholder="File name / ID">
+                  </th>
+                  <th>
+                    <label class="sr-only" for="recording-filter-duration-min">Minimum duration in minutes</label>
+                    <input id="recording-filter-duration-min" form="recording-filter-form" name="duration_min" data-recording-filter type="number" min="0" step="0.1" placeholder="Min min">
+                    <label class="sr-only" for="recording-filter-duration-max">Maximum duration in minutes</label>
+                    <input id="recording-filter-duration-max" form="recording-filter-form" name="duration_max" data-recording-filter type="number" min="0" step="0.1" placeholder="Max min">
+                  </th>
+                  <th aria-label="No filter"></th>
+                </tr>
               </thead>
               <tbody id="recordings"></tbody>
             </table>
           </div>
+          <nav id="recordings-pagination" class="recordings-pagination" aria-label="Recording pages">
+            <button class="secondary" data-page-action="first" type="button">First</button>
+            <button class="secondary" data-page-action="previous" type="button">Previous</button>
+            <span id="recordings-page" aria-live="polite"></span>
+            <button class="secondary" data-page-action="next" type="button">Next</button>
+            <button class="secondary" data-page-action="last" type="button">Last</button>
+          </nav>
         </section>
 
         <section class="panel diagnostics-panel">

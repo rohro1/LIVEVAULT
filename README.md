@@ -157,6 +157,10 @@ Pages `GITHUB_PAT` therefore needs repository **Variables: read and write** and
 token there if dashboard diagnostics report HTTP 401.
 
 The recordings table can queue permanent Drive deletion after confirmation.
+It shows 15 recordings per page across the full history, with combined
+per-column filters, global search, and sorting by either New York start time or
+Drive upload time. The Uploaded column is the time the verified upload was
+recorded by the dashboard.
 **Fetch missing durations** uses Google Drive video metadata to backfill older
 rows and probes the video with FFmpeg when Drive has not published a duration.
 The recordings refresh updates the table as durations are saved; videos that

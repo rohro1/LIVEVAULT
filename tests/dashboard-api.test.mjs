@@ -42,16 +42,21 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
   ]));
   const recordings = new Map(initialRecordings.map((recording) => [recording.drive_id, recording]));
   const activity = [];
+  const queries = [];
   let manualDispatchedAt = null;
   return {
     accounts,
     accountStatuses,
     activity,
+    queries,
     prepare(sql) {
       let values = [];
+      const query = { sql, bindings: [] };
+      queries.push(query);
       return {
         bind(...parameters) {
           values = parameters;
+          query.bindings = parameters;
           return this;
         },
         async first() {
@@ -70,7 +75,9 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
           if (sql.includes("SELECT drive_id FROM recordings WHERE drive_id")) {
             return recordings.get(values[0]) || null;
           }
-          if (sql.includes("SELECT COUNT(*) AS count FROM recordings")) {
+          if (sql.includes(
+            "SELECT COUNT(*) AS count FROM recordings WHERE duration_seconds IS NULL",
+          )) {
             return {
               count: [...recordings.values()].filter(
                 (recording) => recording.duration_seconds == null ||
@@ -78,9 +85,19 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
               ).length,
             };
           }
+          if (sql.includes("SELECT COUNT(*) AS count FROM recordings")) {
+            return { count: recordings.size };
+          }
           throw new Error(`Unexpected first() query: ${sql}`);
         },
         async all() {
+          if (sql.includes("SELECT DISTINCT username FROM recordings")) {
+            return {
+              results: [...new Set([...recordings.values()].map(({ username }) => username))]
+                .sort((a, b) => a.localeCompare(b))
+                .map((username) => ({ username })),
+            };
+          }
           if (sql.includes("FROM accounts LEFT JOIN account_status")) {
             return {
               results: [...accounts].map(([username, account]) => ({
@@ -97,6 +114,21 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
                 .filter(([, account]) => account.active === 1)
                 .map(([username]) => ({ username })),
             };
+          }
+          if (sql.includes("FROM recordings") && sql.includes("LIMIT ? OFFSET ?")) {
+            let rows = [...recordings.values()];
+            if (sql.includes("ORDER BY started_at ASC")) {
+              rows.sort((a, b) => a.started_at.localeCompare(b.started_at));
+            } else if (sql.includes("ORDER BY started_at DESC")) {
+              rows.sort((a, b) => b.started_at.localeCompare(a.started_at));
+            } else if (sql.includes("ORDER BY created_at ASC")) {
+              rows.sort((a, b) => a.created_at.localeCompare(b.created_at));
+            } else {
+              rows.sort((a, b) => b.created_at.localeCompare(a.created_at));
+            }
+            const limit = values.at(-2);
+            const offset = values.at(-1);
+            return { results: rows.slice(offset, offset + limit) };
           }
           if (sql.includes("FROM recordings") && sql.includes("ORDER BY started_at")) {
             return {
@@ -297,9 +329,9 @@ async function organizeRecordings(env) {
   });
 }
 
-async function listRecordings(env) {
+async function listRecordings(env, query = "") {
   return onRequest({
-    request: new Request("https://livevault.example/api/recordings", {
+    request: new Request(`https://livevault.example/api/recordings${query}`, {
       headers: { Cookie: await sessionCookie() },
     }),
     env,
@@ -647,7 +679,7 @@ test("Drive organization queues a Drive maintenance workflow", async () => {
   }
 });
 
-test("recordings report missing durations across the full Drive history", async () => {
+test("recordings return 15 rows while retaining counts for the full Drive history", async () => {
   const recordings = Array.from({ length: 201 }, (_, index) => ({
     drive_id: `drive_file_${String(index).padStart(5, "0")}`,
     username: "alice",
@@ -665,8 +697,70 @@ test("recordings report missing durations across the full Drive history", async 
 
   assert.equal(response.status, 200);
   const result = await response.json();
-  assert.equal(result.recordings.length, 200);
+  assert.equal(result.recordings.length, 15);
+  assert.equal(result.total, 201);
+  assert.equal(result.page, 1);
+  assert.equal(result.page_size, 15);
+  assert.equal(result.pages, 14);
+  assert.deepEqual(result.usernames, ["alice"]);
   assert.equal(result.missing_durations, 1);
+});
+
+test("recordings paginate and combine column filters with New York date bounds", async () => {
+  const recordings = Array.from({ length: 40 }, (_, index) => ({
+    drive_id: `drive_file_${String(index).padStart(5, "0")}`,
+    username: index % 2 ? "alice" : "bob",
+    room_id: "room",
+    started_at: `20260308_${String(index).padStart(6, "0")}`,
+    part_number: index + 1,
+    filename: `recording_part${index}.mp4`,
+    drive_url: "https://drive.google.com/",
+    file_size: 20 * 1024 * 1024,
+    duration_seconds: 1800,
+    created_at: "2026-03-08T12:00:00.000Z",
+  }));
+  const database = createDatabase([], recordings);
+  const env = createEnvironment(database);
+  const response = await listRecordings(
+    env,
+    "?account=alice&started_from=2026-03-08&started_to=2026-03-08" +
+      "&uploaded_from=2026-03-08&uploaded_to=2026-03-08&part=2" +
+      "&size_min=10&size_max=20&drive=part002&duration_min=15" +
+      "&duration_max=30&search=alice&page=2&sort=started_asc",
+  );
+  const result = await response.json();
+  const listQuery = database.queries.find(({ sql }) => sql.includes("LIMIT ? OFFSET ?"));
+  const countQuery = database.queries.find(({ sql }) =>
+    sql.includes("SELECT COUNT(*) AS count FROM recordings WHERE username = ?")
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(result.page, 2);
+  assert.equal(result.recordings.length, 15);
+  assert.equal(listQuery.bindings.at(-2), 15);
+  assert.equal(listQuery.bindings.at(-1), 15);
+  assert.match(listQuery.sql, /username = \?/);
+  assert.match(listQuery.sql, /substr\(started_at, 1, 8\) >= \?/);
+  assert.match(listQuery.sql, /created_at >= \?/);
+  assert.match(listQuery.sql, /part_number = \?/);
+  assert.match(listQuery.sql, /file_size >= \?/);
+  assert.match(listQuery.sql, /instr\(lower\(filename\), lower\(\?\)\)/);
+  assert.match(listQuery.sql, /duration_seconds >= \?/);
+  assert.match(listQuery.sql, /ORDER BY started_at ASC/);
+  assert.equal(listQuery.bindings[1], "20260308");
+  assert.equal(listQuery.bindings[3], "2026-03-08T05:00:00.000Z");
+  assert.equal(listQuery.bindings[4], "2026-03-09T04:00:00.000Z");
+  assert.ok(countQuery);
+  assert.ok(countQuery.sql.includes("duration_seconds <= ?"));
+});
+
+test("recording filters reject reversed date ranges", async () => {
+  const response = await listRecordings(
+    createEnvironment(createDatabase()),
+    "?started_from=2026-11-09&started_to=2026-11-08",
+  );
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /range is reversed/);
 });
 
 test("missing-duration endpoint supports paging beyond 200 Drive files", async () => {

@@ -11,8 +11,16 @@ const checkAllButton = document.querySelector("#check-all");
 const backfillDurationsButton = document.querySelector("#backfill-durations");
 const organizeRecordingsButton = document.querySelector("#organize-recordings");
 const recordingsRefreshButton = document.querySelector("#refresh");
+const recordingFilters = [...document.querySelectorAll("[data-recording-filter]")];
+const recordingCount = document.querySelector("#recording-count");
+const recordingsPageLabel = document.querySelector("#recordings-page");
+const recordingsPagination = document.querySelector("#recordings-pagination");
+const recordingFilterAccount = document.querySelector("#recording-filter-account");
 let cachedDiagnostics = null;
 let diagnosticsFetchedAt = 0;
+let recordingsRequestId = 0;
+let recordingFilterTimer = null;
+let recordingPageState = { page: 1, pages: 0, total: 0 };
 const DIAGNOSTICS_REFRESH_MS = 120_000;
 const ACCOUNT_STATUS_STALE_MS = 7 * 60_000;
 
@@ -228,24 +236,75 @@ function renderActivity(events) {
   }
 }
 
-function renderRecordings(recordings, missingDurationCount) {
+function formatUploadedTime(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "—";
+  return date.toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "America/New_York",
+  });
+}
+
+function recordingUrl() {
+  const params = new URLSearchParams({
+    page: String(recordingPageState.page),
+    sort: recordingFilters.find((filter) => filter.name === "sort").value,
+  });
+  for (const filter of recordingFilters) {
+    if (filter.name === "sort") continue;
+    const value = filter.value.trim();
+    if (value) params.set(filter.name, value);
+  }
+  return `/api/recordings?${params}`;
+}
+
+function renderRecordings(data) {
   recordingsBody.replaceChildren();
-  for (const recording of recordings) {
+  recordingPageState = {
+    page: data.page,
+    pages: data.pages,
+    total: data.total,
+  };
+  const selectedAccount = recordingFilterAccount.value;
+  recordingFilterAccount.replaceChildren(new Option("All accounts", ""));
+  for (const username of data.usernames) {
+    recordingFilterAccount.add(new Option(username, username));
+  }
+  recordingFilterAccount.value = data.usernames.includes(selectedAccount) ? selectedAccount : "";
+
+  if (!data.recordings.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 8;
+    cell.className = "empty-state";
+    cell.textContent = data.total
+      ? "No recordings match these filters."
+      : "No verified recordings yet.";
+    row.append(cell);
+    recordingsBody.append(row);
+  }
+  for (const recording of data.recordings) {
     const row = document.createElement("tr");
     const started = recording.started_at;
     const formatted = started.length === 15
       ? `${started.slice(0, 4)}-${started.slice(4, 6)}-${started.slice(6, 8)} ${started.slice(9, 11)}:${started.slice(11, 13)}:${started.slice(13, 15)}`
       : started;
-    for (const value of [
-      recording.username,
-      formatted,
-      `part${String(recording.part_number).padStart(3, "0")}`,
-      formatBytes(recording.file_size),
-    ]) {
+    for (const value of [recording.username, formatted, formatUploadedTime(recording.created_at)]) {
       const cell = document.createElement("td");
       cell.textContent = value;
       row.append(cell);
     }
+    const partCell = document.createElement("td");
+    partCell.textContent = `part${String(recording.part_number).padStart(3, "0")}`;
+    row.append(partCell);
+    const sizeCell = document.createElement("td");
+    sizeCell.textContent = formatBytes(recording.file_size);
+    row.append(sizeCell);
     const linkCell = document.createElement("td");
     const link = document.createElement("a");
     link.href = recording.drive_url;
@@ -272,10 +331,22 @@ function renderRecordings(recordings, missingDurationCount) {
     row.append(actionsCell);
     recordingsBody.append(row);
   }
-  backfillDurationsButton.classList.toggle("hidden", missingDurationCount === 0);
-  backfillDurationsButton.disabled = missingDurationCount === 0;
+  const firstItem = data.total ? (data.page - 1) * data.page_size + 1 : 0;
+  const lastItem = Math.min(data.page * data.page_size, data.total);
+  recordingCount.textContent = data.total
+    ? `Showing ${firstItem}–${lastItem} of ${data.total}`
+    : "0 recordings";
+  recordingsPageLabel.textContent = `Page ${data.page} of ${Math.max(1, data.pages)}`;
+  for (const button of recordingsPagination.querySelectorAll("button[data-page-action]")) {
+    button.disabled = button.dataset.pageAction === "first" ||
+      button.dataset.pageAction === "previous"
+      ? data.page <= 1
+      : data.page >= data.pages;
+  }
+  backfillDurationsButton.classList.toggle("hidden", data.missing_durations === 0);
+  backfillDurationsButton.disabled = data.missing_durations === 0;
   backfillDurationsButton.textContent =
-    `Fetch ${missingDurationCount} missing duration(s)`;
+    `Fetch ${data.missing_durations} missing duration(s)`;
 }
 
 function diagnosticLine(container, message, state = "ok", url = "") {
@@ -489,19 +560,33 @@ function renderDiagnostics(data, events) {
   diagnosticConnection.className = `diagnostic-state ${failed ? "error" : "online"}`;
 }
 
+async function fetchRecordingPage() {
+  const requestId = ++recordingsRequestId;
+  const data = await api(recordingUrl());
+  if (requestId === recordingsRequestId) renderRecordings(data);
+}
+
+async function refreshRecordingPage() {
+  try {
+    await fetchRecordingPage();
+    if (notice.classList.contains("error")) showNotice("");
+  } catch (error) {
+    showNotice(error.message, true);
+  }
+}
+
 async function loadDashboard(quiet = false) {
   const shouldRefreshDiagnostics = !cachedDiagnostics ||
     Date.now() - diagnosticsFetchedAt >= DIAGNOSTICS_REFRESH_MS;
-  const [accounts, recordings, activity, diagnostics] = await Promise.all([
+  const [accounts, , activity, diagnostics] = await Promise.all([
     api("/api/accounts"),
-    api("/api/recordings"),
+    fetchRecordingPage(),
     api("/api/activity"),
     shouldRefreshDiagnostics
       ? api("/api/diagnostics")
       : Promise.resolve(cachedDiagnostics),
   ]);
   renderAccounts(accounts.accounts);
-  renderRecordings(recordings.recordings, recordings.missing_durations);
   renderActivity(activity.events);
   cachedDiagnostics = diagnostics;
   if (shouldRefreshDiagnostics) diagnosticsFetchedAt = Date.now();
@@ -509,6 +594,41 @@ async function loadDashboard(quiet = false) {
   showDashboard();
   if (!quiet) showNotice("");
 }
+
+for (const filter of recordingFilters) {
+  const eventName = filter.type === "search" || filter.type === "number" ? "input" : "change";
+  filter.addEventListener(eventName, () => {
+    recordingPageState.page = 1;
+    if (eventName === "input") {
+      clearTimeout(recordingFilterTimer);
+      recordingFilterTimer = setTimeout(refreshRecordingPage, 250);
+    } else {
+      refreshRecordingPage();
+    }
+  });
+}
+
+document.querySelector("#clear-recording-filters").addEventListener("click", () => {
+  for (const filter of recordingFilters) {
+    filter.value = filter.name === "sort" ? "uploaded_desc" : "";
+  }
+  recordingPageState.page = 1;
+  refreshRecordingPage();
+});
+
+recordingsPagination.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-page-action]");
+  if (!button || button.disabled) return;
+  const lastPage = Math.max(1, recordingPageState.pages);
+  const pageByAction = {
+    first: 1,
+    previous: recordingPageState.page - 1,
+    next: recordingPageState.page + 1,
+    last: lastPage,
+  };
+  recordingPageState.page = pageByAction[button.dataset.pageAction];
+  refreshRecordingPage();
+});
 
 document.querySelector("#login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
