@@ -300,7 +300,12 @@ function renderRecordings(data) {
       row.append(cell);
     }
     const partCell = document.createElement("td");
-    partCell.textContent = `part${String(recording.part_number).padStart(3, "0")}`;
+    const partLink = document.createElement("a");
+    partLink.href = recording.drive_url;
+    partLink.target = "_blank";
+    partLink.rel = "noopener noreferrer";
+    partLink.textContent = `part${String(recording.part_number).padStart(3, "0")}`;
+    partCell.append(partLink);
     row.append(partCell);
     const sizeCell = document.createElement("td");
     sizeCell.textContent = formatBytes(recording.file_size);
@@ -685,7 +690,7 @@ accountsList.addEventListener("click", async (event) => {
         body: JSON.stringify({ active: button.dataset.active === "true" }),
       });
     } else {
-      if (!window.confirm(`Remove @${button.dataset.username} from LIVEVAULT? This will stop monitoring and recording it.`)) {
+      if (!window.confirm(`Remove @${button.dataset.username} from LIVEVAULT? This stops monitoring. Existing Drive recordings are kept.`)) {
         return;
       }
       await api(`/api/accounts/${encodeURIComponent(button.dataset.username)}`, {
@@ -694,7 +699,7 @@ accountsList.addEventListener("click", async (event) => {
     }
     await loadDashboard();
     showNotice(button.dataset.action === "remove"
-      ? "Account removed; any active recorder will stop shortly and upload its captured part."
+      ? "Account removed; any active recorder will stop shortly and upload its captured part. Existing Drive recordings are kept."
       : "Account list updated.");
   } catch (error) {
     showNotice(error.message, true);

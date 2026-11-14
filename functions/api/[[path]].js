@@ -733,6 +733,15 @@ async function handle(request, env) {
   if (path === "/api/internal/recordings" && request.method === "POST") {
     return internalRecording(request, env);
   }
+  if (path === "/api/internal/accounts" && request.method === "GET") {
+    await internalAuthorized(request, env);
+    const rows = await env.DB.prepare(
+      "SELECT username FROM accounts ORDER BY username COLLATE NOCASE",
+    ).all();
+    return json({
+      usernames: (rows.results || []).map((row) => row.username),
+    });
+  }
   if (path.startsWith("/api/internal/accounts/") && request.method === "GET") {
     await internalAuthorized(request, env);
     const username = trackedUsername(

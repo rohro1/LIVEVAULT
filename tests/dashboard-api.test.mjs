@@ -91,6 +91,13 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
           throw new Error(`Unexpected first() query: ${sql}`);
         },
         async all() {
+          if (sql.includes("SELECT username FROM accounts ORDER BY username")) {
+            return {
+              results: [...accounts.keys()]
+                .sort((a, b) => a.localeCompare(b))
+                .map((username) => ({ username })),
+            };
+          }
           if (sql.includes("SELECT DISTINCT username FROM recordings")) {
             return {
               results: [...new Set([...recordings.values()].map(({ username }) => username))]
@@ -345,6 +352,15 @@ async function listRecordingsToOrganize(env, after) {
       `https://livevault.example/api/internal/recordings/organize${query}`,
       { headers: { Authorization: "Bearer dashboard-token" } },
     ),
+    env,
+  });
+}
+
+async function listInternalAccounts(env) {
+  return onRequest({
+    request: new Request("https://livevault.example/api/internal/accounts", {
+      headers: { Authorization: "Bearer dashboard-token" },
+    }),
     env,
   });
 }
@@ -811,6 +827,23 @@ test("recording organization endpoint pages through all known Drive files", asyn
     "started_at",
     "username",
   ]);
+});
+
+test("internal account list is authenticated and includes paused accounts", async () => {
+  const env = createEnvironment(createDatabase([
+    { username: "alice", active: 1 },
+    { username: "bob", active: 0 },
+  ]));
+  const response = await listInternalAccounts(env);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { usernames: ["alice", "bob"] });
+
+  const unauthorized = await onRequest({
+    request: new Request("https://livevault.example/api/internal/accounts"),
+    env,
+  });
+  assert.equal(unauthorized.status, 401);
 });
 
 test("recording deletion rejects file IDs not present in the dashboard", async () => {

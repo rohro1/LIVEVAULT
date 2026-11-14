@@ -119,12 +119,15 @@ Successful
 parts are uploaded to the Drive account used for OAuth and deleted from runner
 disk only after Drive confirms the uploaded file ID, name, and size.
 New uploads are placed in `LIVEVAULT/<username>/<YYYY-MM-DD>` folders, with
-dates based on the recording's America/New_York start date. Use **Organize Drive
-folders** in the dashboard to move previously uploaded, dashboard-tracked files
-into the same layout. The job verifies each Drive file against its dashboard
-record before moving it; it does not scan or move unrelated Drive files.
-Duplicate empty date folders are moved to Drive trash after a verified merge;
-folders with untracked contents are retained and reported instead of deleted.
+dates based on the recording's America/New_York start date. **Organize Drive
+folders** creates missing folders for dashboard accounts and consolidates
+duplicate roots, user folders, and date folders. It verifies tracked recordings
+against dashboard metadata, and preserves other items it finds inside the
+LIVEVAULT folder tree while merging duplicates. A duplicate folder is moved to
+Drive trash only after its contents have been moved and verified; folders with
+remaining contents are kept and reported. Removing an account does not remove
+its recordings: empty folders for removed accounts are cleaned during
+organization, while folders containing recordings or other contents remain.
 Recording parts target 30 minutes by default. A part can be shorter if the live
 ends or the stream disconnects; the dashboard displays each uploaded video's
 measured duration so interruptions are visible. Parts are grouped by newest

@@ -1,3 +1,4 @@
+import datetime
 import json
 import math
 import os
@@ -16,8 +17,8 @@ from record import (
     api_request,
     drive_children,
     drive_folders,
+    ensure_drive_folder,
     recording_folder_id,
-    recording_parent_folder_id,
     refresh_token,
 )
 
@@ -217,6 +218,207 @@ def trash_empty_folder(folder, name, parent_id, token):
     return True
 
 
+def move_drive_item(item, source_id, destination_id, token):
+    item_id = item.get("id")
+    parents = item.get("parents")
+    if (
+        not isinstance(item_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", item_id)
+        or not isinstance(item.get("name"), str)
+        or not item.get("name")
+        or item.get("trashed", False)
+        or not isinstance(parents, list)
+        or not all(isinstance(parent, str) for parent in parents)
+        or not isinstance(source_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", source_id)
+        or source_id not in parents
+        or not isinstance(destination_id, str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", destination_id)
+        or source_id == destination_id
+    ):
+        raise RuntimeError("Refusing to move an unverified Drive item")
+    parameters = {
+        "supportsAllDrives": "true",
+        "fields": "id,name,mimeType,parents,trashed",
+    }
+    if destination_id not in parents:
+        parameters["addParents"] = destination_id
+    parameters["removeParents"] = source_id
+    url = (
+        f"{DRIVE_API}/files/{urllib.parse.quote(item_id, safe='')}?"
+        f"{urllib.parse.urlencode(parameters)}"
+    )
+    status, _, raw = api_request(
+        url,
+        method="PATCH",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if status != 200:
+        raise RuntimeError(f"Google Drive item move failed (HTTP {status})")
+    updated = json.loads(raw)
+    if (
+        updated.get("id") != item_id
+        or updated.get("name") != item["name"]
+        or updated.get("trashed", False)
+        or source_id in updated.get("parents", [])
+        or destination_id not in updated.get("parents", [])
+    ):
+        raise RuntimeError("Google Drive item move did not pass verification")
+
+
+def is_date_folder(name):
+    if not isinstance(name, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", name):
+        return False
+    try:
+        datetime.datetime.strptime(name, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
+def consolidate_drive_folders(token, dashboard_usernames, recording_usernames):
+    roots = drive_folders("LIVEVAULT", None, token)
+    if not roots:
+        ensure_drive_folder("LIVEVAULT", token)
+        roots = drive_folders("LIVEVAULT", None, token)
+        if not roots:
+            raise RuntimeError("Google Drive root folder creation failed")
+    root_id = roots[0]["id"]
+    if not isinstance(root_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", root_id):
+        raise RuntimeError("Google Drive returned an invalid LIVEVAULT folder")
+
+    folders_by_root = {}
+    usernames = set(dashboard_usernames)
+    retained_usernames = usernames | set(recording_usernames)
+    usernames.update(recording_usernames)
+    for root in roots:
+        root_folder_id = root.get("id")
+        if not isinstance(root_folder_id, str):
+            raise RuntimeError("Google Drive returned an invalid LIVEVAULT folder")
+        children = drive_children(root_folder_id, token)
+        user_folders = [
+            item for item in children
+            if item.get("mimeType") == DRIVE_FOLDER_MIME
+            and isinstance(item.get("name"), str)
+            and re.fullmatch(r"[a-z0-9._]{1,24}", item["name"])
+        ]
+        folders_by_root[root_folder_id] = user_folders
+        usernames.update(item["name"] for item in user_folders)
+
+    duplicate_folders_trashed = 0
+    duplicate_folders_retained = 0
+    orphan_folders_trashed = 0
+    orphan_folders_retained = 0
+    for username in sorted(usernames):
+        if not re.fullmatch(r"[a-z0-9._]{1,24}", username):
+            raise ValueError("Dashboard returned an invalid TikTok username")
+        canonical_user_id = ensure_drive_folder(username, token, root_id)
+        user_folders = [
+            folder
+            for root_folders in folders_by_root.values()
+            for folder in root_folders
+            if folder.get("name") == username
+        ]
+        if not any(folder.get("id") == canonical_user_id for folder in user_folders):
+            canonical_user = next(
+                (folder for folder in drive_children(root_id, token)
+                 if folder.get("id") == canonical_user_id),
+                None,
+            )
+            if not canonical_user:
+                raise RuntimeError("Google Drive canonical account folder was not found")
+            user_folders.append(canonical_user)
+        date_folders = [
+            (user_folder, date_folder)
+            for user_folder in user_folders
+            for date_folder in drive_children(user_folder["id"], token)
+            if date_folder.get("mimeType") == DRIVE_FOLDER_MIME
+            and is_date_folder(date_folder.get("name"))
+        ]
+        date_names = sorted({folder["name"] for _, folder in date_folders})
+        for date_name in date_names:
+            canonical_date_id = ensure_drive_folder(
+                date_name, token, canonical_user_id
+            )
+            matching_dates = [
+                folder for _, folder in date_folders
+                if folder.get("name") == date_name
+            ]
+            for duplicate in matching_dates:
+                duplicate_id = duplicate.get("id")
+                if duplicate_id == canonical_date_id:
+                    continue
+                for child in drive_children(duplicate_id, token):
+                    move_drive_item(child, duplicate_id, canonical_date_id, token)
+                if trash_empty_folder(
+                    duplicate, date_name, duplicate.get("parents", [None])[0], token
+                ):
+                    duplicate_folders_trashed += 1
+                else:
+                    duplicate_folders_retained += 1
+
+        for duplicate_user in user_folders:
+            duplicate_user_id = duplicate_user.get("id")
+            if duplicate_user_id == canonical_user_id:
+                continue
+            if trash_empty_folder(
+                duplicate_user,
+                username,
+                duplicate_user.get("parents", [None])[0],
+                token,
+            ):
+                duplicate_folders_trashed += 1
+            else:
+                duplicate_folders_retained += 1
+
+        if username not in retained_usernames:
+            canonical_user = next(
+                (folder for folder in drive_children(root_id, token)
+                 if folder.get("id") == canonical_user_id),
+                None,
+            )
+            if not canonical_user:
+                raise RuntimeError("Google Drive canonical account folder was not found")
+            for date_folder in drive_children(canonical_user_id, token):
+                if (
+                    date_folder.get("mimeType") == DRIVE_FOLDER_MIME
+                    and is_date_folder(date_folder.get("name"))
+                ):
+                    if trash_empty_folder(
+                        date_folder,
+                        date_folder["name"],
+                        canonical_user_id,
+                        token,
+                    ):
+                        orphan_folders_trashed += 1
+                    else:
+                        orphan_folders_retained += 1
+            if trash_empty_folder(canonical_user, username, root_id, token):
+                orphan_folders_trashed += 1
+            else:
+                orphan_folders_retained += 1
+
+    for duplicate_root in roots:
+        if duplicate_root.get("id") == root_id:
+            continue
+        if trash_empty_folder(
+            duplicate_root,
+            "LIVEVAULT",
+            "root",
+            token,
+        ):
+            duplicate_folders_trashed += 1
+        else:
+            duplicate_folders_retained += 1
+
+    return (
+        duplicate_folders_trashed,
+        duplicate_folders_retained,
+        orphan_folders_trashed,
+        orphan_folders_retained,
+    )
+
+
 def organize_recordings(token):
     moved = 0
     already_organized = 0
@@ -224,8 +426,21 @@ def organize_recordings(token):
     checked = 0
     duplicate_folders_trashed = 0
     duplicate_folders_retained = 0
-    target_folders = {}
+    orphan_folders_trashed = 0
+    orphan_folders_retained = 0
+    recording_usernames = set()
     folder_cache = {}
+    account_response = dashboard_request("/api/internal/accounts")
+    dashboard_usernames = account_response.get("usernames", [])
+    if (
+        not isinstance(dashboard_usernames, list)
+        or any(
+            not isinstance(username, str)
+            or not re.fullmatch(r"[a-z0-9._]{1,24}", username)
+            for username in dashboard_usernames
+        )
+    ):
+        raise RuntimeError("Dashboard returned an invalid account list")
     after = None
     while True:
         path = "/api/internal/recordings/organize"
@@ -267,12 +482,10 @@ def organize_recordings(token):
                 unavailable += 1
                 print("WARNING: a Drive file did not match its dashboard recording")
                 continue
-            date = f"{started_at[:4]}-{started_at[4:6]}-{started_at[6:8]}"
-            user_folder_id = recording_parent_folder_id(username, token, folder_cache)
             destination = recording_folder_id(
                 username, started_at, token, folder_cache
             )
-            target_folders[(username, date)] = (user_folder_id, destination)
+            recording_usernames.add(username)
             parents = metadata.get("parents", [])
             if destination in parents:
                 already_organized += 1
@@ -308,24 +521,31 @@ def organize_recordings(token):
         if len(recordings) < 200:
             break
         after = recordings[-1]["drive_id"]
-    for (username, date), (user_folder_id, destination) in target_folders.items():
-        for folder in drive_folders(date, user_folder_id, token):
-            if folder.get("id") == destination:
-                continue
-            if trash_empty_folder(folder, date, user_folder_id, token):
-                duplicate_folders_trashed += 1
-            else:
-                duplicate_folders_retained += 1
-                print(
-                    "WARNING: an extra date folder contains items not listed "
-                    "in the LIVEVAULT dashboard; it was left untouched"
-                )
+    (
+        duplicate_folders_trashed,
+        duplicate_folders_retained,
+        orphan_folders_trashed,
+        orphan_folders_retained,
+    ) = (
+        consolidate_drive_folders(
+            token,
+            dashboard_usernames,
+            sorted(recording_usernames),
+        )
+    )
+    if duplicate_folders_retained or orphan_folders_retained:
+        print(
+            "WARNING: Drive folders with remaining contents were "
+            "preserved for manual review"
+        )
     print(
         "RESULT: Drive organization complete; "
         f"moved={moved}; already_organized={already_organized}; "
         f"unavailable={unavailable}; checked={checked}; "
         f"duplicate_folders_trashed={duplicate_folders_trashed}; "
-        f"duplicate_folders_retained={duplicate_folders_retained}"
+        f"duplicate_folders_retained={duplicate_folders_retained}; "
+        f"empty_orphan_folders_trashed={orphan_folders_trashed}; "
+        f"orphan_folders_retained={orphan_folders_retained}"
     )
 
 
