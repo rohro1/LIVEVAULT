@@ -609,6 +609,7 @@ test("recording start time persists across heartbeats and clears when recording 
   const lastOnlineAt = database.accountStatuses.get("alice").last_online_at;
   assert.ok(lastOnlineAt);
 
+  await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal((await report(true, "recording", "Recording stream")).status, 200);
   const restartedAt = database.accountStatuses.get("alice").recording_started_at;
   assert.ok(restartedAt);
