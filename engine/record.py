@@ -66,6 +66,11 @@ def api_request(url, method="GET", headers=None, body=None, timeout=60):
     except urllib.error.HTTPError as exc:
         if exc.code == 308:
             return exc.code, exc.headers, exc.read()
+        try:
+            body = exc.read().decode("utf-8", "replace")[:1000]
+        except Exception:
+            body = "<could not read response body>"
+        print(f"::warning::Google API error body (HTTP {exc.code}): {body}")
         raise APIError(exc.code) from None
     except urllib.error.URLError as exc:
         raise NetworkError(f"Network request failed ({exc.reason.__class__.__name__})") from None
