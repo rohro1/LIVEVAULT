@@ -662,9 +662,14 @@ async function addActivity(env, username, message) {
   await env.DB.prepare(
     "INSERT INTO activity_logs (username, message) VALUES (?, ?)",
   ).bind(username || null, safeMessage).run();
-  await env.DB.prepare(
-    "DELETE FROM activity_logs WHERE id NOT IN (SELECT id FROM activity_logs ORDER BY id DESC LIMIT 500)",
-  ).run();
+  const cutoff = await env.DB.prepare(
+    "SELECT id FROM activity_logs ORDER BY id DESC LIMIT 1 OFFSET 500",
+  ).first();
+  if (cutoff) {
+    await env.DB.prepare(
+      "DELETE FROM activity_logs WHERE id <= ?",
+    ).bind(cutoff.id).run();
+  }
 }
 
 async function logAccountLifecycle(env, username, action, message) {
