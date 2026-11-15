@@ -38,6 +38,7 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
       recorder_status: account.recorder_status || "idle",
       recording_started_at: account.recording_started_at || null,
       checked_at: account.checked_at || null,
+      last_online_at: account.last_online_at || null,
     },
   ]));
   const recordings = new Map(initialRecordings.map((recording) => [recording.drive_id, recording]));
@@ -204,6 +205,7 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
           if (sql.includes("INSERT INTO account_status")) {
             const previous = accountStatuses.get(values[0]);
             const recording = values[2] === "recording" && values[1] === 1;
+            const checkedAt = new Date().toISOString();
             accountStatuses.set(values[0], {
               online: values[1],
               recorder_status: values[2],
@@ -212,7 +214,10 @@ function createDatabase(initialAccounts = [], initialRecordings = []) {
                   ? previous.recording_started_at
                   : new Date().toISOString()
                 : null,
-              checked_at: new Date().toISOString(),
+              checked_at: checkedAt,
+              last_online_at: values[1] === 1
+                ? checkedAt
+                : previous?.last_online_at || null,
             });
             return { meta: { changes: 1 } };
           }
@@ -601,13 +606,40 @@ test("recording start time persists across heartbeats and clears when recording 
 
   assert.equal((await report(false, "idle", "Account is offline")).status, 200);
   assert.equal(database.accountStatuses.get("alice").recording_started_at, null);
+  const lastOnlineAt = database.accountStatuses.get("alice").last_online_at;
+  assert.ok(lastOnlineAt);
 
   assert.equal((await report(true, "recording", "Recording stream")).status, 200);
   const restartedAt = database.accountStatuses.get("alice").recording_started_at;
   assert.ok(restartedAt);
   const response = await getAccounts(env);
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).accounts[0].recording_started_at, restartedAt);
+  const account = (await response.json()).accounts[0];
+  assert.equal(account.recording_started_at, restartedAt);
+  assert.equal(account.last_online_at, database.accountStatuses.get("alice").last_online_at);
+  assert.notEqual(account.last_online_at, lastOnlineAt);
+});
+
+test("offline and inconclusive checks preserve the last confirmed online timestamp", async () => {
+  const initialLastOnlineAt = "2026-11-08T22:00:00.000Z";
+  const database = createDatabase([{
+    username: "alice",
+    active: 1,
+    online: 1,
+    last_online_at: initialLastOnlineAt,
+  }]);
+  const env = createEnvironment(database);
+  const report = (online) => reportInternalStatus(env, {
+    username: "alice",
+    online,
+    recorder_status: "idle",
+    message: "Status checked",
+  });
+
+  assert.equal((await report(false)).status, 200);
+  assert.equal(database.accountStatuses.get("alice").last_online_at, initialLastOnlineAt);
+  assert.equal((await report(null)).status, 200);
+  assert.equal(database.accountStatuses.get("alice").last_online_at, initialLastOnlineAt);
 });
 
 test("manual checks are rate limited to one dispatched scan per minute", async () => {

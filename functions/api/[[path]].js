@@ -480,7 +480,8 @@ async function accountList(env) {
   const rows = await env.DB.prepare(
     `SELECT accounts.username, accounts.active, accounts.created_at,
            account_status.online, account_status.recorder_status,
-           account_status.recording_started_at, account_status.checked_at
+           account_status.recording_started_at, account_status.checked_at,
+           account_status.last_online_at
     FROM accounts LEFT JOIN account_status USING (username)
     ORDER BY accounts.username`,
   ).all();
@@ -492,6 +493,7 @@ async function accountList(env) {
     recorder_status: row.recorder_status || "idle",
     recording_started_at: row.recording_started_at,
     checked_at: row.checked_at,
+    last_online_at: row.last_online_at,
   }));
 }
 
@@ -715,7 +717,11 @@ async function internalStatus(request, env) {
        END,
        online = excluded.online,
        recorder_status = excluded.recorder_status,
-       checked_at = excluded.checked_at`,
+       checked_at = excluded.checked_at,
+       last_online_at = CASE
+         WHEN excluded.online = 1 THEN excluded.checked_at
+         ELSE account_status.last_online_at
+       END`,
   ).bind(
     username,
     body.online === null ? null : body.online ? 1 : 0,

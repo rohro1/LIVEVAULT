@@ -179,6 +179,25 @@ function renderAccounts(accounts) {
     }
     details.append(name, status);
 
+    const lastActive = document.createElement("div");
+    lastActive.className = "account-last-active";
+    if (account.last_online_at) {
+      const lastActiveTime = document.createElement("time");
+      lastActiveTime.dateTime = account.last_online_at;
+      lastActiveTime.textContent = new Date(account.last_online_at).toLocaleString([], {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        timeZone: "America/New_York",
+        timeZoneName: "short",
+      });
+      lastActive.append(lastActiveTime);
+    } else {
+      lastActive.textContent = "Not confirmed online yet";
+    }
+
     const actions = document.createElement("div");
     actions.className = "row-actions";
     const toggle = document.createElement("button");
@@ -202,7 +221,7 @@ function renderAccounts(accounts) {
     check.dataset.username = account.username;
     check.disabled = !account.active;
     actions.append(check, toggle, remove);
-    row.append(details, actions);
+    row.append(details, lastActive, actions);
     accountsList.append(row);
   }
 }

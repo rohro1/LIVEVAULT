@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS account_status (
   online INTEGER CHECK (online IN (0, 1) OR online IS NULL),
   recorder_status TEXT NOT NULL DEFAULT 'idle',
   recording_started_at TEXT,
-  checked_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  checked_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  last_online_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS activity_logs (
