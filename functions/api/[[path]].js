@@ -835,6 +835,29 @@ async function handle(request, env) {
   if (path === "/api/internal/status" && request.method === "POST") {
     return internalStatus(request, env);
   }
+  if (path === "/api/internal/drive-storage" && request.method === "POST") {
+    await internalAuthorized(request, env);
+    const body = await readJson(request);
+    if (typeof body.usage_bytes !== "number" || body.usage_bytes < 0) {
+      throw new HttpError(400, "usage_bytes must be a non-negative number");
+    }
+    const limitBytes = body.limit_bytes === null || body.limit_bytes === undefined
+      ? null
+      : Number(body.limit_bytes);
+    if (limitBytes !== null && (!Number.isFinite(limitBytes) || limitBytes < 0)) {
+      throw new HttpError(400, "limit_bytes must be null or a non-negative number");
+    }
+    const value = JSON.stringify({
+      usage_bytes: body.usage_bytes,
+      limit_bytes: limitBytes,
+      updated_at: new Date().toISOString(),
+    });
+    await env.DB.prepare(
+      `INSERT INTO dashboard_settings (key, value) VALUES ('drive_storage', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).bind(value).run();
+    return json({ ok: true });
+  }
   if (path === "/api/logout" && request.method === "POST") {
     requireSameOrigin(request);
     return json({ ok: true }, 200, {
@@ -1014,6 +1037,12 @@ async function handle(request, env) {
     if (!recording) throw new HttpError(404, "Recording was not found");
     await dispatchDriveMaintenance(env, "delete", driveId);
     return json({ ok: true, queued: true }, 202);
+  }
+  if (path === "/api/drive-storage" && request.method === "GET") {
+    const row = await env.DB.prepare(
+      "SELECT value FROM dashboard_settings WHERE key = 'drive_storage'",
+    ).first();
+    return json({ storage: row ? JSON.parse(row.value) : null });
   }
   if (path === "/api/activity" && request.method === "GET") {
     const rows = await env.DB.prepare(

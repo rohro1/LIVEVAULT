@@ -580,6 +580,36 @@ def delete_recording(file_id, token):
     print(f"RESULT: recording deleted from Google Drive and dashboard: {record['filename']}")
 
 
+def fetch_storage_usage(token):
+    status, _, raw = api_request(
+        f"{DRIVE_API}/about?fields=storageQuota",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if status != 200:
+        raise RuntimeError(f"Google Drive storage lookup failed (HTTP {status})")
+    quota = json.loads(raw).get("storageQuota", {})
+    usage = int(quota.get("usage", 0))
+    limit = quota.get("limit")  # absent entirely if unlimited
+    endpoint = os.environ.get("DASHBOARD_API_URL", "").rstrip("/")
+    dashboard_token = os.environ.get("DASHBOARD_API_TOKEN", "")
+    if not endpoint or not dashboard_token:
+        raise RuntimeError("Both dashboard URL and dashboard API token are required")
+    print(f"::add-mask::{dashboard_token}")
+    payload = {"usage_bytes": usage, "limit_bytes": int(limit) if limit else None}
+    status, _, _ = api_request(
+        endpoint + "/api/internal/drive-storage",
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {dashboard_token}",
+            "Content-Type": "application/json",
+        },
+        body=json.dumps(payload).encode(),
+    )
+    if status not in {200, 202}:
+        raise RuntimeError(f"Dashboard storage update failed (HTTP {status})")
+    print(f"RESULT: storage usage reported ({usage} of {limit or 'unlimited'} bytes)")
+
+
 def main():
     if len(sys.argv) not in {2, 3}:
         raise RuntimeError("Usage: drive_admin.py ACTION [DRIVE_ID]")
@@ -590,6 +620,8 @@ def main():
         backfill_durations(token)
     elif action == "organize" and not drive_id:
         organize_recordings(token)
+    elif action == "storage-usage" and not drive_id:
+        fetch_storage_usage(token)
     elif action == "delete" and drive_id:
         delete_recording(drive_id, token)
     else:

@@ -602,19 +602,21 @@ async function refreshRecordingPage() {
 async function loadDashboard(quiet = false) {
   const shouldRefreshDiagnostics = !cachedDiagnostics ||
     Date.now() - diagnosticsFetchedAt >= DIAGNOSTICS_REFRESH_MS;
-  const [accounts, , activity, diagnostics] = await Promise.all([
+  const [accounts, , activity, diagnostics, storage] = await Promise.all([
     api("/api/accounts"),
     fetchRecordingPage(),
     api("/api/activity"),
     shouldRefreshDiagnostics
       ? api("/api/diagnostics")
       : Promise.resolve(cachedDiagnostics),
+    api("/api/drive-storage"),
   ]);
   renderAccounts(accounts.accounts);
   renderActivity(activity.events);
   cachedDiagnostics = diagnostics;
   if (shouldRefreshDiagnostics) diagnosticsFetchedAt = Date.now();
   renderDiagnostics(cachedDiagnostics.diagnostics, activity.events);
+  renderStorage(storage.storage);
   showDashboard();
   if (!quiet) showNotice("");
 }

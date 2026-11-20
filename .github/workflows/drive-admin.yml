@@ -10,6 +10,7 @@ on:
           - delete
           - backfill-durations
           - organize
+          - storage-usage
       drive_id:
         description: Verified LIVEVAULT Drive file ID (delete only)
         required: false
